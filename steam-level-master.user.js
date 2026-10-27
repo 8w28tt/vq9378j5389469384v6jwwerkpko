@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.3.0
+// @version      1.3.1
 // @description  Каталог самых дешёвых сетов карточек, проверка реальных цен ТП со стаканом (Instant-Fill) и мгновенный крафт без анимаций.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
@@ -346,7 +346,49 @@
     }
 
     function getSessionID() {
-        return window.g_sessionID || (document.cookie.match(/sessionid=([a-f0-9]+)/) || [])[1];
+        if (typeof unsafeWindow !== 'undefined' && unsafeWindow && unsafeWindow.g_sessionID) {
+            return unsafeWindow.g_sessionID;
+        }
+        if (typeof window !== 'undefined' && window && window.g_sessionID) {
+            return window.g_sessionID;
+        }
+        const cookieMatch = document.cookie ? document.cookie.match(/sessionid=([a-f0-9]+)/i) : null;
+        if (cookieMatch && cookieMatch[1]) {
+            return cookieMatch[1];
+        }
+        const html = document.documentElement ? document.documentElement.innerHTML : '';
+        const htmlMatch = html.match(/g_sessionID\s*=\s*"([a-f0-9]+)"/i);
+        if (htmlMatch && htmlMatch[1]) {
+            return htmlMatch[1];
+        }
+        return '';
+    }
+
+    // Определение канонического URL профиля пользователя в Steam (для прямых POST запросов без 302-редиректов)
+    function getSteamProfileUrl() {
+        if (typeof unsafeWindow !== 'undefined' && unsafeWindow && unsafeWindow.g_rgProfileData && unsafeWindow.g_rgProfileData.url) {
+            return unsafeWindow.g_rgProfileData.url;
+        }
+        if (typeof window !== 'undefined' && window && window.g_rgProfileData && window.g_rgProfileData.url) {
+            return window.g_rgProfileData.url;
+        }
+        const html = document.documentElement ? document.documentElement.innerHTML : '';
+        const match = html.match(/g_rgProfileData\s*=\s*\{[^}]*"url"\s*:\s*"([^"]+)"/i);
+        if (match && match[1]) {
+            return match[1].replace(/\\/g, '');
+        }
+        const locMatch = window.location.pathname.match(/^(\/(?:id|profiles)\/[^\/]+)/i);
+        if (locMatch) {
+            return `${window.location.origin}${locMatch[1]}/`;
+        }
+        const profileLink = document.querySelector('a.user_avatar, .header_profile_link, #global_header a[href*="/id/"], #global_header a[href*="/profiles/"], a[href*="/badges/"]');
+        if (profileLink && profileLink.href) {
+            const m = profileLink.href.match(/(https?:\/\/steamcommunity\.com\/(?:id|profiles)\/[^\/]+)/i);
+            if (m) {
+                return `${m[1]}/`;
+            }
+        }
+        return 'https://steamcommunity.com/my/';
     }
 
     // Определение валюты пользователя (поддержка KZT ₸, RUB руб., UAH ₴, USD $, EUR € и др.)
@@ -788,11 +830,21 @@
 
         updateCalculation();
 
+        const isFoil = window.location.search.includes('border=1') || window.location.href.includes('border_color=1');
+        const borderColor = isFoil ? 1 : 0;
+
         // Обработчик Turbo Craft
         const turboBtn = panel.querySelector('#slm-btn-turbo-craft');
         if (turboBtn) {
-            turboBtn.addEventListener('click', () => {
-                turboCraftBadge(appid);
+            turboBtn.addEventListener('click', async () => {
+                turboBtn.disabled = true;
+                turboBtn.innerText = '⏳ Сковываем значок...';
+                try {
+                    await turboCraftBadge(appid, borderColor);
+                } finally {
+                    turboBtn.disabled = false;
+                    turboBtn.innerText = '⚡ Быстрый крафт готовых (Turbo Craft)';
+                }
             });
         }
 
@@ -814,8 +866,12 @@
 
     function canCraftAny(currentLevel, cardsData) {
         if (currentLevel >= 5) return false;
-        // Можно скрафтить хотя бы 1 раз, если каждой карты есть хотя бы 1 штука
-        return cardsData.every(c => c.owned >= 1);
+        // Если на странице есть нативная кнопка ковки от Steam - значок точно готов к крафту
+        if (document.querySelector('.badge_craft_button, a[href*="Profile_CraftBadge"]')) {
+            return true;
+        }
+        // Или если у каждой карты есть хотя бы 1 штука
+        return cardsData.length > 0 && cardsData.every(c => (c.owned || 0) >= 1);
     }
 
     // =========================================================================
@@ -1248,30 +1304,140 @@
     // =========================================================================
     // API: TURBO CRAFT (Мгновенный крафт значка без анимации)
     // =========================================================================
-    async function turboCraftBadge(appid) {
+    function sendCraftRequest(profileUrl, appid, sessionid, borderColor = 0) {
+        return new Promise((resolve, reject) => {
+            const fullUrl = `${profileUrl.replace(/\/+$/, '')}/ajaxcraftbadge/`;
+            const postData = {
+                appid: String(appid),
+                series: '1',
+                border_color: String(borderColor),
+                sessionid: String(sessionid)
+            };
+
+            // Способ 1: Использование jQuery Steam (unsafeWindow.$J) - самый надежный вариант внутри Steam
+            let hasJQuery = false;
+            try {
+                if (typeof unsafeWindow !== 'undefined' && unsafeWindow && unsafeWindow.$J && typeof unsafeWindow.$J.ajax === 'function') {
+                    hasJQuery = true;
+                    unsafeWindow.$J.ajax({
+                        url: fullUrl,
+                        type: 'POST',
+                        data: postData,
+                        dataType: 'json'
+                    }).done((data) => {
+                        resolve(data);
+                    }).fail((jqXHR, textStatus, errorThrown) => {
+                        console.warn('[SLM] $J.ajax завершился ошибкой, пробуем fetch...', textStatus, errorThrown);
+                        tryFetch();
+                    });
+                }
+            } catch (err) {
+                console.warn('[SLM] Ошибка при вызове $J.ajax:', err);
+            }
+
+            if (!hasJQuery) {
+                tryFetch();
+            }
+
+            // Способ 2: fetch с credentials: 'include'
+            function tryFetch() {
+                const body = new URLSearchParams();
+                for (const key in postData) {
+                    body.append(key, postData[key]);
+                }
+
+                fetch(fullUrl, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Accept': 'application/json, text/javascript, */*; q=0.01'
+                    },
+                    body: body.toString()
+                })
+                .then(async resp => {
+                    const text = await resp.text();
+                    try {
+                        const json = JSON.parse(text);
+                        resolve(json);
+                    } catch (e) {
+                        throw new Error(`Ответ сервера не JSON (${resp.status}): ${text.slice(0, 120)}`);
+                    }
+                })
+                .catch(err => {
+                    console.warn('[SLM] fetch завершился ошибкой, пробуем GM_xmlhttpRequest...', err);
+                    tryGM(err);
+                });
+            }
+
+            // Способ 3: GM_xmlhttpRequest
+            function tryGM(fetchErr) {
+                if (typeof GM_xmlhttpRequest === 'function') {
+                    const body = new URLSearchParams();
+                    for (const key in postData) {
+                        body.append(key, postData[key]);
+                    }
+
+                    GM_xmlhttpRequest({
+                        method: 'POST',
+                        url: fullUrl,
+                        data: body.toString(),
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'Accept': 'application/json, text/javascript, */*; q=0.01'
+                        },
+                        onload: (res) => {
+                            try {
+                                const data = JSON.parse(res.responseText);
+                                resolve(data);
+                            } catch (parseErr) {
+                                reject(new Error(`Ответ сервера не JSON (${res.status}): ${res.responseText.slice(0, 120)}`));
+                            }
+                        },
+                        onerror: (err) => reject(new Error(`GM_xmlhttpRequest error: ${err}`))
+                    });
+                } else {
+                    reject(fetchErr);
+                }
+            }
+        });
+    }
+
+    function isCraftSuccess(data) {
+        if (!data) return false;
+        if (data.success === 1 || data.success === true || data.success === '1') return true;
+        if (data.Badge || data.badge || data.rgBadgeData || data.rgDrops) return true;
+        return false;
+    }
+
+    async function turboCraftBadge(appid, borderColor = 0) {
         const sessionid = getSessionID();
-        showToast(`⚡ Начинаем крафт для AppID: ${appid}...`, 'info');
+        const profileUrl = getSteamProfileUrl();
+
+        if (!sessionid) {
+            showToast('Не удалось определить SessionID Steam. Попробуйте обновить страницу.', 'error');
+            return false;
+        }
+
+        showToast(`⚡ Начинаем крафт значка для AppID: ${appid}...`, 'info');
 
         try {
-            const resp = await fetch('https://steamcommunity.com/my/ajaxcraftbadge/', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'X-Requested-With': 'XMLHttpRequest'
-                },
-                body: `appid=${appid}&series=1&border_color=0&sessionid=${sessionid}`
-            });
-
-            const data = await resp.json();
-            if (data.success === 1 || data.Badge) {
+            const data = await sendCraftRequest(profileUrl, appid, sessionid, borderColor);
+            if (isCraftSuccess(data)) {
                 showToast(`🎉 Значок успешно скрафчен! Уровень повышен!`, 'success');
-                setTimeout(() => window.location.reload(), 1500);
+                setTimeout(() => window.location.reload(), 1200);
+                return true;
             } else {
-                showToast(`Не удалось скрафтить значок: ${data.message || 'Проверьте карты'}`, 'error');
+                const msg = data.message || data.error || (data.success ? `Код: ${data.success}` : 'Проверьте наличие карт');
+                showToast(`Не удалось сковать значок: ${msg}`, 'error');
+                return false;
             }
         } catch (e) {
             console.error('[SLM] Ошибка Turbo Craft', e);
-            showToast(`Ошибка сети при крафте`, 'error');
+            showToast(`Ошибка крафта: ${e.message}`, 'error');
+            return false;
         }
     }
 
@@ -1308,6 +1474,31 @@
         // 2. Считываем значки пользователя и их текущие уровни
         const userBadgeLevels = new Map();
         const readyBadges = [];
+
+        function isBadgeRowReadyToCraft(row) {
+            if (!row) return false;
+            if (row.querySelector('.btn_green_white_innerfade, .badge_craft_button, a[href*="ajaxcraftbadge"]')) {
+                return true;
+            }
+            const links = row.querySelectorAll('a.btn_small_thin, a[href*="/gamecards/"]');
+            for (const link of links) {
+                const text = (link.innerText || '').trim().toLowerCase();
+                if (text.includes('готов') || text.includes('ready') || text.includes('сковать') || text.includes('craft')) {
+                    return true;
+                }
+            }
+            const progressEl = row.querySelector('.progress_info_bold, .badge_progress_info');
+            if (progressEl) {
+                const match = progressEl.innerText.match(/(\d+)\s*(?:из|\/|of)\s*(\d+)/i);
+                if (match && parseInt(match[1], 10) >= parseInt(match[2], 10) && parseInt(match[2], 10) > 0) {
+                    return true;
+                }
+            }
+            if (row.classList.contains('ready') || (row.innerText || '').match(/(?:готов к ковке|ready to craft)/i)) {
+                return true;
+            }
+            return false;
+        }
 
         function parseBadgesFromDoc(doc) {
             const rows = doc.querySelectorAll('.badge_row');
@@ -1359,9 +1550,38 @@
                 const prevLvl = userBadgeLevels.get(appid) || 0;
                 userBadgeLevels.set(appid, Math.max(prevLvl, lvl));
 
-                const craftBtn = row.querySelector('.badge_craft_button, a[href*="ajaxcraftbadge"]');
-                if (craftBtn) {
-                    readyBadges.push({ appid, row });
+                if (isBadgeRowReadyToCraft(row)) {
+                    if (!readyBadges.some(b => b.appid === appid)) {
+                        readyBadges.push({ appid, row });
+                    }
+                    if (doc === document && !row.querySelector('.slm-row-turbo-craft-btn')) {
+                        const craftBtn = document.createElement('button');
+                        craftBtn.className = 'slm-btn slm-btn-green slm-row-turbo-craft-btn';
+                        craftBtn.style.cssText = 'padding: 4px 10px; font-size: 12px; margin-left: 8px; vertical-align: middle; cursor: pointer;';
+                        craftBtn.innerHTML = '⚡ Быстрый крафт';
+                        craftBtn.title = 'Сковать значок моментально без анимаций';
+                        craftBtn.onclick = async (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            craftBtn.disabled = true;
+                            craftBtn.innerText = '⏳ Крафт...';
+                            const ok = await turboCraftBadge(appid);
+                            if (!ok) {
+                                craftBtn.disabled = false;
+                                craftBtn.innerText = '⚡ Быстрый крафт';
+                            }
+                        };
+                        const actionContainer = row.querySelector('.badge_row_overlay') 
+                            || row.querySelector('.btn_green_white_innerfade') 
+                            || row.querySelector('a[href*="/gamecards/"]')
+                            || row.querySelector('.badge_row_inner')
+                            || row;
+                        if (actionContainer && actionContainer.parentNode) {
+                            actionContainer.parentNode.insertBefore(craftBtn, actionContainer.nextSibling);
+                        } else {
+                            actionContainer.appendChild(craftBtn);
+                        }
+                    }
                 }
             });
         }
@@ -1398,6 +1618,7 @@
                 console.log(`[SLM] Все страницы значков загружены! Всего распознано значков игр: ${userBadgeLevels.size}`);
                 applyCatalogFilters();
                 renderCatalogTable();
+                updateCraftTabUI();
             }
         }
 
@@ -1477,7 +1698,7 @@
             <div class="slm-tab-pane" id="slm-pane-craft">
                 <div style="background: rgba(0,0,0,0.25); padding: 18px; border-radius: 6px;">
                     <div style="font-size: 15px; margin-bottom: 12px;">
-                        Готово к крафту на текущей странице: <b style="color: #a4d007; font-size: 18px;">${readyBadges.length}</b> значков.
+                        Готово к крафту на текущей странице: <b style="color: #a4d007; font-size: 18px;" id="slm-craft-count-num">${readyBadges.length}</b> значков.
                     </div>
                     <button class="slm-btn slm-btn-green" id="slm-mass-craft-btn" ${readyBadges.length > 0 ? '' : 'disabled'}>
                         ⚡ Скрафтить ВСЕ готовые значки пачкой (${readyBadges.length})
@@ -1672,9 +1893,30 @@
         }, 500);
 
         // --- ЛОГИКА ТУРБО-КРАФТА ---
+        function updateCraftTabUI() {
+            const tabBtn = bar.querySelector('.slm-tab-btn[data-tab="craft"]');
+            if (tabBtn) {
+                tabBtn.innerText = `⚡ Быстрый крафт (${readyBadges.length} готово)`;
+            }
+            const countEl = bar.querySelector('#slm-craft-count-num');
+            if (countEl) {
+                countEl.innerText = `${readyBadges.length}`;
+            }
+            const massBtn = bar.querySelector('#slm-mass-craft-btn');
+            if (massBtn) {
+                massBtn.disabled = (readyBadges.length === 0);
+                massBtn.innerText = `⚡ Скрафтить ВСЕ готовые значки пачкой (${readyBadges.length})`;
+            }
+        }
+
         const massBtn = bar.querySelector('#slm-mass-craft-btn');
         if (massBtn) {
             massBtn.onclick = async () => {
+                if (readyBadges.length === 0) {
+                    showToast('На странице нет готовых к крафту значков', 'info');
+                    return;
+                }
+
                 if (!confirm(`Вы уверены, что хотите мгновенно скрафтить все доступные значки (${readyBadges.length} шт.)?`)) {
                     return;
                 }
@@ -1683,35 +1925,53 @@
                 const progress = bar.querySelector('#slm-mass-craft-progress');
                 if (progress) progress.style.display = 'block';
 
+                let successCount = 0;
+                let failCount = 0;
                 let count = 0;
+
                 for (const item of readyBadges) {
                     count++;
                     if (progress) progress.innerText = `⏳ Крафтим [${count}/${readyBadges.length}] AppID: ${item.appid}...`;
-                    await turboCraftBadgeSilent(item.appid);
-                    await sleep(400);
+                    const res = await turboCraftBadgeSilent(item.appid);
+                    if (res.success) {
+                        successCount++;
+                    } else {
+                        failCount++;
+                        console.warn(`[SLM] Не удалось сковать значок AppID ${item.appid}:`, res.message);
+                    }
+                    await sleep(600);
                 }
 
-                if (progress) progress.innerHTML = `<b style="color: #a4d007;">🎉 Все доступные значки успешно скрафчены!</b>`;
-                setTimeout(() => window.location.reload(), 1500);
+                if (successCount > 0 && failCount === 0) {
+                    if (progress) progress.innerHTML = `<b style="color: #a4d007;">🎉 Все значки (${successCount} шт.) успешно скрафчены! Перезагрузка страницы...</b>`;
+                    setTimeout(() => window.location.reload(), 1500);
+                } else if (successCount > 0 && failCount > 0) {
+                    if (progress) progress.innerHTML = `<b style="color: #66c0f4;">Скрафчено: ${successCount}, Ошибок: ${failCount}. Перезагрузка страницы...</b>`;
+                    setTimeout(() => window.location.reload(), 2000);
+                } else {
+                    if (progress) progress.innerHTML = `<b style="color: #ff4d4d;">❌ Не удалось скрафтить значки (Ошибок: ${failCount}). Проверьте наличие карт и консоль браузера (F12).</b>`;
+                    massBtn.disabled = false;
+                }
             };
         }
 
         return true;
     }
 
-    async function turboCraftBadgeSilent(appid) {
+    async function turboCraftBadgeSilent(appid, borderColor = 0) {
         const sessionid = getSessionID();
+        const profileUrl = getSteamProfileUrl();
+        if (!sessionid) return { success: false, message: 'Не найден SessionID Steam' };
+
         try {
-            await fetch('https://steamcommunity.com/my/ajaxcraftbadge/', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'X-Requested-With': 'XMLHttpRequest'
-                },
-                body: `appid=${appid}&series=1&border_color=0&sessionid=${sessionid}`
-            });
+            const data = await sendCraftRequest(profileUrl, appid, sessionid, borderColor);
+            if (isCraftSuccess(data)) {
+                return { success: true, data };
+            } else {
+                return { success: false, message: data.message || data.error || `Код: ${data.success}` };
+            }
         } catch (e) {
-            console.error('[SLM] Ошибка при фоновом крафте', e);
+            return { success: false, message: e.message };
         }
     }
 
