@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.2.3
+// @version      1.2.4
 // @description  Умный калькулятор значков, каталог самых дешёвых сетов, проверка реальных цен ТП со стаканом (Instant-Fill) и мгновенный крафт без анимаций.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
@@ -512,12 +512,9 @@
     }
 
     function parseExactUserXp(userLevel) {
-        const baseXp = getXpForLevel(userLevel);
-        const bracketXp = (Math.floor(userLevel / 10) + 1) * 100;
-        const nextLevelTotalXp = baseXp + bracketXp;
-
         let exactCurrentXp = null;
         let xpToNextLevel = null;
+        let derivedCurrentLevel = userLevel;
 
         // Контейнеры шапки профиля/значков Steam
         const headerContainers = [
@@ -532,73 +529,56 @@
         for (const container of headerContainers) {
             const text = (container.innerText || '').replace(/\u00A0/g, ' ');
 
-            // 1. Поиск: "Осталось 55 ед. опыта до следующего уровня" / "55 XP to next level" / "55 XP needed to reach"
+            // 1. Поиск: "316 ед. опыта до 49-го уровня" / "316 XP needed to reach Level 49"
             if (xpToNextLevel === null) {
-                const m1 = text.match(/(\d[\d\s,]*)\s*(?:ед\.?\s*опыта|XP)\s*(?:до\s*(?:следующего\s*уровня|уровня|\d+\s*ур)|needed to reach|to next level|to level)/i);
-                if (m1) {
-                    const val = parseInt(m1[1].replace(/[\s,]/g, ''), 10);
-                    if (val > 0 && val <= bracketXp) {
-                        xpToNextLevel = val;
+                const nextLvlRegex = /(\d[\d\s,]*)\s*(?:ед\.?\s*опыта|XP)\s*(?:до\s*(?:следующего\s*уровня|(?:\d+)(?:-?го|-?ого)?\s*уровня|уровня|\d+\s*ур)|needed to reach(?:\s*level\s*\d+)?|to next level|to level\s*\d+)/i;
+                const mNext = text.match(nextLvlRegex);
+                if (mNext) {
+                    xpToNextLevel = parseInt(mNext[1].replace(/[\s,]/g, ''), 10);
+                }
+
+                // Извлечение номера уровня из фразы "до 49-го уровня"
+                const nextNumMatch = text.match(/до\s*(\d+)(?:-?го|-?ого)?\s*уровня/i)
+                    || text.match(/(?:needed to reach level|to level)\s*(\d+)/i);
+                if (nextNumMatch) {
+                    const targetNextLvl = parseInt(nextNumMatch[1], 10);
+                    if (targetNextLvl > 1) {
+                        derivedCurrentLevel = targetNextLvl - 1;
                     }
                 }
             }
 
-            if (xpToNextLevel === null) {
-                const m2 = text.match(/(?:до\s*(?:следующего\s*уровня|уровня|\d+\s*ур)|to next level|needed to reach)[^0-9]*(\d[\d\s,]*)\s*(?:ед\.?\s*опыта|XP)/i);
-                if (m2) {
-                    const val = parseInt(m2[1].replace(/[\s,]/g, ''), 10);
-                    if (val > 0 && val <= bracketXp) {
-                        xpToNextLevel = val;
-                    }
-                }
-            }
-
-            // 2. Прогресс-бар "145 / 200 XP"
-            if (exactCurrentXp === null && xpToNextLevel === null) {
-                const mProg = text.match(/(\d[\d\s,]*)\s*\/\s*(\d[\d\s,]*)\s*(?:ед\.?\s*опыта|XP)/i);
-                if (mProg) {
-                    const currentOnBracket = parseInt(mProg[1].replace(/[\s,]/g, ''), 10);
-                    const totalOnBracket = parseInt(mProg[2].replace(/[\s,]/g, ''), 10);
-                    if (totalOnBracket >= 100 && currentOnBracket <= totalOnBracket) {
-                        xpToNextLevel = totalOnBracket - currentOnBracket;
-                        exactCurrentXp = baseXp + currentOnBracket;
-                    }
-                }
-            }
-
-            // 3. Общий опыт: "2 345 ед. опыта" / "2,345 XP"
+            // 2. Поиск общего опыта: "14,184 ед. опыта" / "14,184 XP" (число перед "ед. опыта", за которым НЕ следует "до")
             if (exactCurrentXp === null) {
-                const descEls = container.querySelectorAll('.badge_info_description, .profile_xp_block, .persona_level, p, div');
-                for (const el of descEls) {
-                    const elText = (el.innerText || '').replace(/\u00A0/g, ' ').trim();
-                    const mTotal = elText.match(/^([\d\s,]+)\s*(?:ед\.?\s*опыта|XP)$/i)
-                        || elText.match(/(?:всего|total)?\s*([\d\s,]+)\s*(?:ед\.?\s*опыта|XP)/i);
-                    if (mTotal) {
-                        const val = parseInt(mTotal[1].replace(/[\s,]/g, ''), 10);
-                        if (val >= baseXp && val <= nextLevelTotalXp) {
-                            exactCurrentXp = val;
-                            break;
-                        }
-                    }
+                const totalXpRegex = /(\d[\d\s,]*)\s*(?:ед\.?\s*опыта|XP)(?!\s*до|\s*needed|\s*to)/i;
+                const mTotal = text.match(totalXpRegex);
+                if (mTotal) {
+                    exactCurrentXp = parseInt(mTotal[1].replace(/[\s,]/g, ''), 10);
                 }
             }
 
-            if (exactCurrentXp !== null || xpToNextLevel !== null) {
+            if (exactCurrentXp !== null && xpToNextLevel !== null) {
                 break;
             }
         }
 
-        // Согласование значений
-        if (xpToNextLevel !== null && exactCurrentXp === null) {
-            exactCurrentXp = nextLevelTotalXp - xpToNextLevel;
-        } else if (exactCurrentXp !== null && xpToNextLevel === null) {
+        // Если не удалось извлечь один из параметров, вычисляем его математически
+        const currLvl = derivedCurrentLevel || userLevel || 1;
+        const baseXp = getXpForLevel(currLvl);
+        const bracketXp = (Math.floor(currLvl / 10) + 1) * 100;
+        const nextLevelTotalXp = baseXp + bracketXp;
+
+        if (exactCurrentXp !== null && xpToNextLevel === null) {
             xpToNextLevel = Math.max(0, nextLevelTotalXp - exactCurrentXp);
+        } else if (xpToNextLevel !== null && exactCurrentXp === null) {
+            exactCurrentXp = nextLevelTotalXp - xpToNextLevel;
         } else if (exactCurrentXp === null && xpToNextLevel === null) {
             exactCurrentXp = baseXp;
             xpToNextLevel = bracketXp;
         }
 
         return {
+            currentLevel: currLvl,
             exactCurrentXp,
             xpToNextLevel,
             bracketXp,
@@ -1464,6 +1444,9 @@
 
         // Парсим точные единицы опыта пользователя и остаток до след. уровня
         const userXpInfo = parseExactUserXp(userCurrentLevel);
+        if (userXpInfo.currentLevel && userXpInfo.currentLevel > 1) {
+            userCurrentLevel = userXpInfo.currentLevel;
+        }
 
         // 2. Считываем значки пользователя и их текущие уровни
         const userBadgeLevels = new Map();
