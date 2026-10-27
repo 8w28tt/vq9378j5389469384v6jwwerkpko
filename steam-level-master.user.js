@@ -1,13 +1,21 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.0.2
+// @version      1.0.3
 // @description  Умный калькулятор значков, проверка реальных цен ТП, гарантированный выкуп карт (Instant-Fill) и мгновенный крафт без анимаций.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
 // @updateURL    https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
-// @match        https://steamcommunity.com/*/badges*
-// @match        https://steamcommunity.com/*/gamecards/*
+// @match        *://steamcommunity.com/*/badges*
+// @match        *://steamcommunity.com/*/gamecards*
+// @match        *://steamcommunity.com/id/*/badges*
+// @match        *://steamcommunity.com/profiles/*/badges*
+// @match        *://steamcommunity.com/my/badges*
+// @match        *://steamcommunity.com/id/*/gamecards*
+// @match        *://steamcommunity.com/profiles/*/gamecards*
+// @match        *://steamcommunity.com/my/gamecards*
+// @include      *://steamcommunity.com/*/badges*
+// @include      *://steamcommunity.com/*/gamecards*
 // @icon         https://store.steampowered.com/favicon.ico
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
@@ -239,18 +247,27 @@
 
     // Определение валюты пользователя (поддержка KZT ₸, RUB руб., UAH ₴, USD $, EUR € и др.)
     function getCurrencyInfo() {
-        const win = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+        let win = window;
+        try {
+            if (typeof unsafeWindow !== 'undefined' && unsafeWindow) {
+                win = unsafeWindow;
+            }
+        } catch (e) {
+            win = window;
+        }
         
         let currency = 5;
         let country = 'RU';
         let symbol = 'руб.';
         let isPrefix = false;
 
-        // 1. Проверяем g_rgWalletInfo из контекста страницы
-        if (win.g_rgWalletInfo && win.g_rgWalletInfo.wallet_currency) {
-            currency = parseInt(win.g_rgWalletInfo.wallet_currency, 10);
-            country = win.g_rgWalletInfo.wallet_country || 'RU';
-        }
+        try {
+            // 1. Проверяем g_rgWalletInfo из контекста страницы
+            if (win && win.g_rgWalletInfo && win.g_rgWalletInfo.wallet_currency) {
+                currency = parseInt(win.g_rgWalletInfo.wallet_currency, 10);
+                country = win.g_rgWalletInfo.wallet_country || 'RU';
+            }
+        } catch (e) {}
 
         // 2. Таблица популярных валют Steam
         const CURRENCY_MAP = {
@@ -269,28 +286,32 @@
 
         if (CURRENCY_MAP[currency]) {
             symbol = CURRENCY_MAP[currency].symbol;
-            if (!win.g_rgWalletInfo?.wallet_country) country = CURRENCY_MAP[currency].country;
+            if (!(win && win.g_rgWalletInfo && win.g_rgWalletInfo.wallet_country)) {
+                country = CURRENCY_MAP[currency].country;
+            }
             isPrefix = CURRENCY_MAP[currency].prefix;
         }
 
         // 3. Автоопределение по балансу в шапке Steam (#header_wallet_balance)
-        const walletEl = document.getElementById('header_wallet_balance');
-        if (walletEl && walletEl.innerText) {
-            const wText = walletEl.innerText;
-            if (wText.includes('₸')) {
-                currency = 37; symbol = '₸'; country = 'KZ'; isPrefix = false;
-            } else if (wText.includes('грн') || wText.includes('₴')) {
-                currency = 18; symbol = '₴'; country = 'UA'; isPrefix = false;
-            } else if (wText.includes('руб') || wText.includes('₽')) {
-                currency = 5; symbol = 'руб.'; country = 'RU'; isPrefix = false;
-            } else if (wText.includes('$')) {
-                currency = 1; symbol = '$'; country = 'US'; isPrefix = true;
-            } else if (wText.includes('€')) {
-                currency = 3; symbol = '€'; country = 'DE'; isPrefix = false;
-            } else if (wText.includes('zł')) {
-                currency = 6; symbol = 'zł'; country = 'PL'; isPrefix = false;
+        try {
+            const walletEl = document.getElementById('header_wallet_balance');
+            if (walletEl && walletEl.innerText) {
+                const wText = walletEl.innerText;
+                if (wText.includes('₸')) {
+                    currency = 37; symbol = '₸'; country = 'KZ'; isPrefix = false;
+                } else if (wText.includes('грн') || wText.includes('₴')) {
+                    currency = 18; symbol = '₴'; country = 'UA'; isPrefix = false;
+                } else if (wText.includes('руб') || wText.includes('₽')) {
+                    currency = 5; symbol = 'руб.'; country = 'RU'; isPrefix = false;
+                } else if (wText.includes('$')) {
+                    currency = 1; symbol = '$'; country = 'US'; isPrefix = true;
+                } else if (wText.includes('€')) {
+                    currency = 3; symbol = '€'; country = 'DE'; isPrefix = false;
+                } else if (wText.includes('zł')) {
+                    currency = 6; symbol = 'zł'; country = 'PL'; isPrefix = false;
+                }
             }
-        }
+        } catch (e) {}
 
         return { currency, country, symbol, isPrefix };
     }
@@ -350,23 +371,48 @@
     }
 
     // =========================================================================
-    // СТРАНИЦА 1: /gamecards/{appid}/ — Умный расчет значка, цен и ордеров
+    // СТАРТ И МАРШРУТИЗАЦИЯ С АВТОПОВТОРОМ (ЗАЩИТА ОТ ЗАДЕРЖКИ РЕНДЕРА DOM)
     // =========================================================================
-    if (window.location.pathname.includes('/gamecards/')) {
-        initGameCardsPage();
+    function runWhenReady(fn, maxAttempts = 15, interval = 350) {
+        let attempts = 0;
+        const check = () => {
+            attempts++;
+            try {
+                const mounted = fn();
+                if (mounted) return;
+            } catch (err) {
+                console.warn('[SLM] Попытка ' + attempts + ' завершилась ошибкой, повторим...', err);
+            }
+            if (attempts < maxAttempts) {
+                setTimeout(check, interval);
+            }
+        };
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', check);
+        } else {
+            check();
+        }
     }
 
-    // =========================================================================
-    // СТРАНИЦА 2: /badges/ — Turbo Craft и общий калькулятор
-    // =========================================================================
-    if (window.location.pathname.includes('/badges')) {
-        initBadgesPage();
+    // Запуск скрипта
+    const currentPath = window.location.pathname;
+    if (currentPath.includes('/gamecards')) {
+        runWhenReady(initGameCardsPage);
+    } else if (currentPath.includes('/badges')) {
+        runWhenReady(initBadgesPage);
     }
 
     function initGameCardsPage() {
+        if (document.getElementById('slm-panel-gamecards')) return true; // Уже встроено
+
         const appidMatch = window.location.pathname.match(/\/gamecards\/(\d+)/);
-        if (!appidMatch) return;
+        if (!appidMatch) return false;
         const appid = appidMatch[1];
+
+        // Ищем карточки на странице
+        const cardElements = document.querySelectorAll('.badge_card_set_card, .gamecards_inventory .badge_card_set_card');
+        if (!cardElements || cardElements.length === 0) return false; // Ждем рендера карт
 
         // Определяем текущий уровень значка
         let currentLevel = 0;
@@ -376,17 +422,13 @@
             if (lvlMatch) currentLevel = parseInt(lvlMatch[1], 10);
         }
 
-        // Парсим карточки на странице
-        const cardElements = document.querySelectorAll('.badge_card_set_card');
         const cardsData = [];
-
         cardElements.forEach(cardEl => {
             const nameEl = cardEl.querySelector('.badge_card_set_text');
             const qtyEl = cardEl.querySelector('.badge_card_set_text_qty');
             if (!nameEl) return;
 
             let cardName = nameEl.innerText.trim();
-            // Убираем количество из имени, если прилипло
             cardName = cardName.replace(/\(\d+\)$/, '').trim();
 
             let ownedQty = 0;
@@ -394,18 +436,15 @@
                 const match = qtyEl.innerText.match(/\((\d+)\)/);
                 ownedQty = match ? parseInt(match[1], 10) : 0;
             } else if (!cardEl.classList.contains('unowned')) {
-                ownedQty = 1; // Если нет плашки (X), но карта не серая — значит 1 шт.
+                ownedQty = 1;
             }
 
-            // Ищем market_hash_name
-            // В Steam на карточке обычно есть ссылка на маркет
             const marketLink = cardEl.querySelector('a[href*="/market/listings/753/"]');
             let marketHashName = '';
             if (marketLink) {
                 const urlParts = marketLink.href.split('/market/listings/753/');
                 if (urlParts[1]) marketHashName = decodeURIComponent(urlParts[1]);
             } else {
-                // Если ссылки нет, формируем стандартный: AppID-CardName
                 marketHashName = `${appid}-${cardName}`;
             }
 
@@ -417,16 +456,26 @@
             });
         });
 
-        if (cardsData.length === 0) return;
+        if (cardsData.length === 0) return false;
 
-        // По умолчанию цель: 5 уровень (или следующий, если уже 5 — foil не трогаем)
+        // По умолчанию цель: 5 уровень
         let targetLevel = currentLevel < 5 ? 5 : 5;
 
-        // Встраиваем панель управления
-        const container = document.querySelector('.badge_detail_tasks') || document.querySelector('.badge_current');
-        if (!container) return;
+        // Ищем контейнер для вставки с гарантированными fallback
+        const container = document.querySelector('.badge_detail_tasks') 
+            || document.querySelector('.badge_current')
+            || document.querySelector('.badge_cards_to_collect')
+            || document.querySelector('.gamecards_inventory')
+            || document.querySelector('.badge_card_set_card_area')
+            || document.querySelector('.badge_detail_header')
+            || document.querySelector('#mainContents')
+            || document.querySelector('.pagecontent')
+            || document.body;
+
+        if (!container) return false;
 
         const panel = document.createElement('div');
+        panel.id = 'slm-panel-gamecards';
         panel.className = 'slm-panel';
         panel.innerHTML = `
             <div class="slm-title">
@@ -461,7 +510,13 @@
             </div>
         `;
 
-        container.parentNode.insertBefore(panel, container);
+        if (container === document.body || container.id === 'mainContents') {
+            container.prepend(panel);
+        } else {
+            container.parentNode.insertBefore(panel, container);
+        }
+
+        console.log('[SLM] Панель значка успешно встроена на страницу!');
 
         function updateCalculation() {
             const levelsToCraft = Math.max(0, targetLevel - currentLevel);
@@ -522,6 +577,8 @@
             }
             openPriceReviewModal(appid, cardsToBuy, targetLevel);
         });
+
+        return true;
     }
 
     function canCraftAny(currentLevel, cardsData) {
@@ -922,8 +979,10 @@
     // СТРАНИЦА ОБЩИХ ЗНАЧКОВ: /badges/
     // =========================================================================
     function initBadgesPage() {
+        if (document.getElementById('slm-panel-badges')) return true;
+
         const badgeRows = document.querySelectorAll('.badge_row');
-        if (badgeRows.length === 0) return;
+        if (!badgeRows || badgeRows.length === 0) return false;
 
         // Ищем готовые к крафту значки
         const readyBadges = [];
@@ -937,10 +996,18 @@
         });
 
         // Создаем шапку-тулбар
-        const header = document.querySelector('.badges_sheet') || document.querySelector('.profile_badges_header');
-        if (!header) return;
+        const header = document.querySelector('.badges_sheet') 
+            || document.querySelector('.profile_badges_header')
+            || document.querySelector('.badge_row_list')
+            || document.querySelector('.profile_content')
+            || document.querySelector('#mainContents')
+            || document.querySelector('.pagecontent')
+            || document.body;
+
+        if (!header) return false;
 
         const bar = document.createElement('div');
+        bar.id = 'slm-panel-badges';
         bar.className = 'slm-panel';
         bar.innerHTML = `
             <div class="slm-title">
@@ -958,7 +1025,13 @@
             <div id="slm-mass-craft-progress" style="margin-top: 10px; display: none; font-size: 13px; color: #66c0f4;"></div>
         `;
 
-        header.parentNode.insertBefore(bar, header);
+        if (header === document.body || header.id === 'mainContents') {
+            header.prepend(bar);
+        } else {
+            header.parentNode.insertBefore(bar, header);
+        }
+
+        console.log('[SLM] Панель обзора значков успешно встроена!');
 
         // Массовый турбо-крафт
         document.getElementById('slm-mass-craft-btn').onclick = async () => {
@@ -982,6 +1055,8 @@
             progress.innerHTML = `<b style="color: #a4d007;">🎉 Все доступные значки успешно скрафчены!</b>`;
             setTimeout(() => window.location.reload(), 1500);
         };
+
+        return true;
     }
 
     async function turboCraftBadgeSilent(appid) {
