@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.2.5
-// @description  Умный калькулятор значков, каталог самых дешёвых сетов, проверка реальных цен ТП со стаканом (Instant-Fill) и мгновенный крафт без анимаций.
+// @version      1.3.0
+// @description  Каталог самых дешёвых сетов карточек, проверка реальных цен ТП со стаканом (Instant-Fill) и мгновенный крафт без анимаций.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
 // @updateURL    https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
@@ -263,32 +263,6 @@
         .slm-tab-pane.active {
             display: block;
         }
-        /* Калькулятор уровня */
-        .slm-calc-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-            gap: 12px;
-            margin: 16px 0;
-        }
-        .slm-stat-card {
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid #2a475e;
-            border-radius: 6px;
-            padding: 14px;
-            text-align: center;
-        }
-        .slm-stat-title {
-            font-size: 11px;
-            color: #8f98a0;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 6px;
-        }
-        .slm-stat-value {
-            font-size: 22px;
-            font-weight: bold;
-            color: #66c0f4;
-        }
         .slm-input {
             background: #101822;
             border: 1px solid #38506b;
@@ -501,120 +475,7 @@
     }
 
     // =========================================================================
-    // МОДУЛЬ 1: КАЛЬКУЛЯТОР УРОВНЯ (ФОРМУЛЫ ОПЫТА STEAM)
-    // =========================================================================
-    function getXpForLevel(targetLevel) {
-        let total = 0;
-        for (let i = 0; i < targetLevel; i++) {
-            total += (Math.floor(i / 10) + 1) * 100;
-        }
-        return total;
-    }
-
-    function parseExactUserXp(userLevel) {
-        let exactCurrentXp = null;
-        let xpToNextLevel = null;
-        let derivedCurrentLevel = userLevel;
-
-        const headerContainers = [
-            document.querySelector('.profile_badges_header'),
-            document.querySelector('.badge_details_set'),
-            document.querySelector('.badges_sheet'),
-            document.querySelector('.profile_content'),
-            document.querySelector('#mainContents')
-        ].filter(Boolean);
-
-        for (const container of headerContainers) {
-            const rawText = (container.innerText || '').replace(/\u00A0/g, ' ');
-            const lines = rawText.split('\n');
-
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed) continue;
-
-                // 1. Уровень: "Уровень 48" или "Level 48"
-                const mLvl = trimmed.match(/^(?:Уровень|Level)\s*(\d+)/i);
-                if (mLvl) {
-                    const lNum = parseInt(mLvl[1], 10);
-                    if (lNum > 0) derivedCurrentLevel = lNum;
-                }
-
-                // 2. Остаток опыта: "316 ед. опыта до 49-го уровня"
-                const mNext = trimmed.match(/([\d\s,]+)\s*(?:ед\.?\s*опыта|XP)\s*до\s*(\d+)?(?:-?го|-?ого)?\s*уровня/i)
-                    || trimmed.match(/([\d\s,]+)\s*(?:ед\.?\s*опыта|XP)\s*(?:до\s*(?:следующего\s*уровня|уровня)|needed to reach|to next level)/i);
-                if (mNext) {
-                    const val = parseInt(mNext[1].replace(/[\s,]/g, ''), 10);
-                    if (!isNaN(val) && val > 0) {
-                        xpToNextLevel = val;
-                    }
-                    if (mNext[2]) {
-                        const targetLvl = parseInt(mNext[2], 10);
-                        if (targetLvl > 1) derivedCurrentLevel = targetLvl - 1;
-                    }
-                }
-
-                // 3. Текущий общий опыт: "14,184 ед. опыта" (строка не содержит "до" или "to")
-                if (!trimmed.includes('до') && !trimmed.toLowerCase().includes('to')) {
-                    const mTot = trimmed.match(/^([\d\s,]+)\s*(?:ед\.?\s*опыта|XP)/i);
-                    if (mTot) {
-                        const val = parseInt(mTot[1].replace(/[\s,]/g, ''), 10);
-                        if (!isNaN(val) && val > 0) {
-                            exactCurrentXp = val;
-                        }
-                    }
-                }
-            }
-
-            if (exactCurrentXp !== null && xpToNextLevel !== null) {
-                break;
-            }
-        }
-
-        const currLvl = derivedCurrentLevel || userLevel || 1;
-        const nextLvlTotalXp = getXpForLevel(currLvl + 1);
-
-        if (xpToNextLevel !== null && exactCurrentXp === null) {
-            exactCurrentXp = nextLvlTotalXp - xpToNextLevel;
-        } else if (exactCurrentXp !== null && xpToNextLevel === null) {
-            xpToNextLevel = Math.max(0, nextLvlTotalXp - exactCurrentXp);
-        } else if (exactCurrentXp === null && xpToNextLevel === null) {
-            exactCurrentXp = getXpForLevel(currLvl);
-            const bracket = (Math.floor(currLvl / 10) + 1) * 100;
-            xpToNextLevel = bracket;
-        }
-
-        return {
-            currentLevel: currLvl,
-            exactCurrentXp,
-            xpToNextLevel
-        };
-    }
-
-    function calculateExactLevelDiff(currentLevel, targetLevel, exactCurrentXp = null) {
-        if (targetLevel <= currentLevel) {
-            return {
-                currentXp: exactCurrentXp || getXpForLevel(currentLevel),
-                targetXp: getXpForLevel(currentLevel),
-                xpNeeded: 0,
-                badgesNeeded: 0
-            };
-        }
-
-        const currXp = (exactCurrentXp !== null && !isNaN(exactCurrentXp)) ? exactCurrentXp : getXpForLevel(currentLevel);
-        const targetXp = getXpForLevel(targetLevel);
-        const xpNeeded = Math.max(0, targetXp - currXp);
-        const badgesNeeded = Math.ceil(xpNeeded / 100);
-
-        return {
-            currentXp: currXp,
-            targetXp,
-            xpNeeded,
-            badgesNeeded
-        };
-    }
-
-    // =========================================================================
-    // МОДУЛЬ 2: ПАРСЕР И КЭШ ДЕШЕВЫХ СЕТОВ (14 000+ ИГР)
+    // МОДУЛЬ 1: ПАРСЕР И КЭШ ДЕШЕВЫХ СЕТОВ (14 000+ ИГР)
     // =========================================================================
     let cachedSetsList = null;
     let cachedRates = null;
@@ -1430,7 +1291,7 @@
         let currentPage = 1;
         const pageSize = 20;
 
-        // 1. Считываем текущий уровень пользователя и точный опыт из шапки Steam
+        // 1. Считываем текущий уровень пользователя из шапки Steam
         let userCurrentLevel = 1;
         const lvlEl = document.querySelector('.friendPlayerLevelNum') 
             || document.querySelector('.persona_level .friendPlayerLevelNum')
@@ -1438,11 +1299,10 @@
         if (lvlEl) {
             userCurrentLevel = parseInt(lvlEl.innerText.trim(), 10) || 1;
         }
-
-        // Парсим точные единицы опыта пользователя и остаток до след. уровня
-        const userXpInfo = parseExactUserXp(userCurrentLevel);
-        if (userXpInfo.currentLevel && userXpInfo.currentLevel > 1) {
-            userCurrentLevel = userXpInfo.currentLevel;
+        const titleLvl = document.querySelector('.profile_badges_header .badge_info_title');
+        if (titleLvl) {
+            const m = titleLvl.innerText.match(/(?:Уровень|Level)\s*(\d+)/i);
+            if (m) userCurrentLevel = parseInt(m[1], 10);
         }
 
         // 2. Считываем значки пользователя и их текущие уровни
@@ -1538,7 +1398,6 @@
                 console.log(`[SLM] Все страницы значков загружены! Всего распознано значков игр: ${userBadgeLevels.size}`);
                 applyCatalogFilters();
                 renderCatalogTable();
-                updateLevelCalculator();
             }
         }
 
@@ -1564,55 +1423,12 @@
 
             <!-- Вкладки панели -->
             <div class="slm-tabs">
-                <button class="slm-tab-btn active" data-tab="calc">📊 Калькулятор уровня</button>
-                <button class="slm-tab-btn" data-tab="catalog">🏷️ Каталог дешёвых сетов (14 000+)</button>
+                <button class="slm-tab-btn active" data-tab="catalog">🏷️ Каталог дешёвых сетов (14 000+)</button>
                 <button class="slm-tab-btn" data-tab="craft">⚡ Быстрый крафт (${readyBadges.length} готово)</button>
             </div>
 
-            <!-- ВКЛАДКА 1: КАЛЬКУЛЯТОР УРОВНЯ -->
-            <div class="slm-tab-pane active" id="slm-pane-calc">
-                <div style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap; background: rgba(0,0,0,0.25); padding: 14px; border-radius: 6px;">
-                    <div>
-                        <span style="font-size: 13px; color: #8f98a0;">Текущий уровень:</span><br>
-                        <input type="number" id="slm-calc-curr-input" class="slm-input" value="${userCurrentLevel}" min="0" max="5000" style="width: 90px; margin-top:4px;">
-                    </div>
-                    <div style="font-size: 20px; color: #38506b; padding-top: 15px;">➔</div>
-                    <div>
-                        <span style="font-size: 13px; color: #8f98a0;">Желаемый уровень:</span><br>
-                        <input type="number" id="slm-calc-target-input" class="slm-input" value="${userCurrentLevel + 1}" min="1" max="5000" style="width: 90px; margin-top:4px;">
-                    </div>
-                    <div style="padding-top: 18px;">
-                        <button class="slm-btn" id="slm-calc-execute-btn">🧮 Рассчитать план</button>
-                    </div>
-                </div>
-
-                <div class="slm-calc-grid">
-                    <div class="slm-stat-card">
-                        <div class="slm-stat-title">Опыта потребуется</div>
-                        <div class="slm-stat-value" id="slm-stat-xp">...</div>
-                    </div>
-                    <div class="slm-stat-card">
-                        <div class="slm-stat-title">Значков (крафтов)</div>
-                        <div class="slm-stat-value" id="slm-stat-badges" style="color:#a4d007;">...</div>
-                    </div>
-                    <div class="slm-stat-card">
-                        <div class="slm-stat-title">Оценочный бюджет</div>
-                        <div class="slm-stat-value" id="slm-stat-cost" style="color:#e5c158;">...</div>
-                    </div>
-                </div>
-
-                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px;">
-                    <div style="font-size: 12px; color: #8f98a0; line-height: 1.5;">
-                        💡 <b>Совет:</b> Сезонный значок в <a href="https://store.steampowered.com/points/shop" target="_blank" style="color:#66c0f4;">Магазине очков Steam</a> дает до 40 уровней (4 000 XP) без покупки карт!
-                    </div>
-                    <button class="slm-btn slm-btn-green" id="slm-btn-go-to-cheap-catalog">
-                        🏷️ Посмотреть дешёвые сеты для этой цели »
-                    </button>
-                </div>
-            </div>
-
-            <!-- ВКЛАДКА 2: КАТАЛОГ ДЕШЕВЫХ СЕТОВ -->
-            <div class="slm-tab-pane" id="slm-pane-catalog">
+            <!-- ВКЛАДКА 1: КАТАЛОГ ДЕШЕВЫХ СЕТОВ -->
+            <div class="slm-tab-pane active" id="slm-pane-catalog">
                 <div class="slm-toolbar">
                     <div class="slm-filter-group">
                         <input type="text" id="slm-catalog-search" class="slm-input" placeholder="🔍 Поиск игры..." style="width: 220px;">
@@ -1657,7 +1473,7 @@
                 </div>
             </div>
 
-            <!-- ВКЛАДКА 3: БЫСТРЫЙ КРАФТ (TURBO CRAFT) -->
+            <!-- ВКЛАДКА 2: БЫСТРЫЙ КРАФТ (TURBO CRAFT) -->
             <div class="slm-tab-pane" id="slm-pane-craft">
                 <div style="background: rgba(0,0,0,0.25); padding: 18px; border-radius: 6px;">
                     <div style="font-size: 15px; margin-bottom: 12px;">
@@ -1682,7 +1498,6 @@
         // --- ЛОГИКА ПЕРЕКЛЮЧЕНИЯ ВКЛАДОК ---
         const tabBtns = bar.querySelectorAll('.slm-tab-btn');
         const tabPanes = {
-            calc: bar.querySelector('#slm-pane-calc'),
             catalog: bar.querySelector('#slm-pane-catalog'),
             craft: bar.querySelector('#slm-pane-craft')
         };
@@ -1701,56 +1516,8 @@
             btn.addEventListener('click', () => switchTab(btn.dataset.tab));
         });
 
-        // --- ЛОГИКА КАЛЬКУЛЯТОРА УРОВНЯ ---
-        const currInput = bar.querySelector('#slm-calc-curr-input');
-        const targetInput = bar.querySelector('#slm-calc-target-input');
-        const statXp = bar.querySelector('#slm-stat-xp');
-        const statBadges = bar.querySelector('#slm-stat-badges');
-        const statCost = bar.querySelector('#slm-stat-cost');
-
-        function updateLevelCalculator() {
-            const currLvl = parseInt(currInput.value, 10) || 0;
-            const targetLvl = parseInt(targetInput.value, 10) || 1;
-
-            // Если выбран текущий уровень аккаунта, используем точный опыт и остаток до след. уровня
-            const isActualUserLevel = (currLvl === userCurrentLevel);
-            const exactXp = isActualUserLevel ? userXpInfo.exactCurrentXp : null;
-            const diff = calculateExactLevelDiff(currLvl, targetLvl, exactXp);
-
-            statXp.innerText = diff.xpNeeded > 0 ? `+${diff.xpNeeded.toLocaleString()} XP` : '0 XP';
-            statBadges.innerText = `${diff.badgesNeeded} шт.`;
-
-            // Если база сетов уже загружена, считаем точную стоимость по ТОП-N дешевых сетов
-            if (allLoadedSets && allLoadedSets.length > 0) {
-                const availableCheap = allLoadedSets.filter(s => (userBadgeLevels.get(s.appid) || 0) < 5);
-                let estimatedCost = 0;
-                const countToTake = Math.min(diff.badgesNeeded, availableCheap.length);
-                for (let i = 0; i < countToTake; i++) {
-                    estimatedCost += availableCheap[i].priceUserCurrency;
-                }
-                // Если нужно больше чем доступно в базе, экстраполируем
-                if (diff.badgesNeeded > countToTake && countToTake > 0) {
-                    const avgPrice = estimatedCost / countToTake;
-                    estimatedCost += (diff.badgesNeeded - countToTake) * avgPrice;
-                }
-                statCost.innerText = formatMoney(Math.round(estimatedCost * 100), currencyInfo);
-            } else {
-                // Примерная оценка до загрузки базы (~0.25$ за сет)
-                const approxRate = currencyInfo.currency === 37 ? 452 : (currencyInfo.currency === 5 ? 81 : 1);
-                const approxCost = diff.badgesNeeded * 0.25 * approxRate;
-                statCost.innerText = `~${formatMoney(Math.round(approxCost * 100), currencyInfo)}`;
-            }
-        }
-
-        bar.querySelector('#slm-calc-execute-btn').addEventListener('click', updateLevelCalculator);
-        currInput.addEventListener('input', updateLevelCalculator);
-        targetInput.addEventListener('input', updateLevelCalculator);
-
-        bar.querySelector('#slm-btn-go-to-cheap-catalog').addEventListener('click', () => {
-            switchTab('catalog');
-        });
-
-        updateLevelCalculator();
+        // Запуск загрузки каталога сразу
+        loadCatalogData();
 
         // --- ЛОГИКА КАТАЛОГА ДЕШЕВЫХ СЕТОВ ---
         async function loadCatalogData(forceRefresh = false) {
@@ -1771,7 +1538,6 @@
 
             try {
                 allLoadedSets = await fetchCheapSets(currencyInfo);
-                updateLevelCalculator(); // Пересчитываем точную стоимость с живыми данными
                 applyCatalogFilters();
             } catch (err) {
                 console.error('[SLM] Ошибка загрузки каталога', err);
@@ -1901,7 +1667,6 @@
         setTimeout(() => {
             fetchCheapSets(currencyInfo).then(sets => {
                 allLoadedSets = sets;
-                updateLevelCalculator();
             }).catch(() => {});
             fetchOtherBadgesPages().catch(() => {});
         }, 500);
