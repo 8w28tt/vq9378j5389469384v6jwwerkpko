@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.3.2
+// @version      1.3.3
 // @description  Каталог самых дешёвых сетов карточек, проверка реальных цен ТП со стаканом (Instant-Fill) и мгновенный крафт без анимаций.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
@@ -1478,50 +1478,52 @@
         function isBadgeRowReadyToCraft(row, currentLvl = 0) {
             if (!row) return false;
 
-            // 1. Если значок уже максимального 5 уровня - его нельзя скрафтить
+            // 1. Исключаем значки 5 уровня (максимальный уровень уже скрафчен)
             if (currentLvl >= 5 || row.classList.contains('is_completed') || row.classList.contains('completed')) {
                 return false;
             }
 
-            const fullText = (row.innerText || '').toLowerCase();
-
-            // 2. Строгие исключения: если в строке прямо написано "не готов" или "not ready"
-            if (fullText.includes('не готов') || fullText.includes('not ready')) {
-                return false;
-            }
-
-            // 3. Проверка прогресса собранных карт (например: "5 из 5", "0 из 5", "3 из 5", "5 of 5")
-            const progressEl = row.querySelector('.progress_info_bold, .badge_progress_info, .badge_info_description');
-            const pText = progressEl ? progressEl.innerText : fullText;
-            const progressMatch = pText.match(/(\d+)\s*(?:из|\/|of)\s*(\d+)/i);
-            if (progressMatch) {
-                const owned = parseInt(progressMatch[1], 10);
-                const total = parseInt(progressMatch[2], 10);
-                // Отсекаем XP (в сетах Steam обычно от 5 до 25 карт)
-                if (total > 0 && total <= 30) {
-                    if (owned < total || owned === 0) {
-                        return false; // Карты отсутствуют или не все
-                    }
-                    if (owned >= total && owned > 0) {
-                        return true; // Все карты в наличии
+            // 2. Ищем зеленую кнопку Steam (.btn_green_white_innerfade)
+            // В Steam на странице значков:
+            // - Зеленая кнопка на ТП ведет на /market/ и содержит слово "купить" / "buy"
+            // - Зеленая кнопка готовности ведет на /gamecards/ со словом "Готов" / "Ready"
+            const greenBtn = row.querySelector('.btn_green_white_innerfade, a[class*="btn_green"]');
+            if (greenBtn) {
+                const href = (greenBtn.href || '').toLowerCase();
+                const text = (greenBtn.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                // Если это НЕ кнопка покупки на ТП
+                if (!href.includes('/market/') && !text.includes('купить') && !text.includes('buy')) {
+                    // Если ведет на карты или имеет текст готовности
+                    if (href.includes('/gamecards/') || /готов|ready|сковать|craft/i.test(text)) {
+                        return true;
                     }
                 }
             }
 
-            // 4. Проверка нативной кнопки готовности Steam.
-            // Кнопка готовности Steam:
-            // - Обязательно ведет на страницу карт (/gamecards/)
-            // - Имеет точный текст "Готов" / "Ready" (а не "Купить на Торговой площадке", "Просмотреть", "Как получить")
-            const gamecardLinks = row.querySelectorAll('a[href*="/gamecards/"]');
-            for (const link of gamecardLinks) {
-                const btnText = (link.innerText || '').trim().toLowerCase();
-                // Исключаем лишние служебные кнопки
-                if (btnText.includes('не готов') || btnText.includes('купить') || btnText.includes('как получить') || btnText.includes('просмотр')) {
+            // 3. Проверяем любые кнопки/ссылки внутри строки с текстом готовности к ковке
+            const allLinks = row.querySelectorAll('a.btn_small_thin, a[href*="/gamecards/"], .badge_craft_button');
+            for (const link of allLinks) {
+                const text = (link.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                const href = (link.href || '').toLowerCase();
+                if (href.includes('/market/') || text.includes('купить') || text.includes('просмотр') || text.includes('как получить')) {
                     continue;
                 }
-                // Строго проверяем, что это кнопка готовности к ковке
-                if (/^(?:готов|ready|сковать(?:\s*значок)?|craft(?:\s*badge)?)$/i.test(btnText)) {
+                if (/готов|ready|сковать|craft/i.test(text)) {
                     return true;
+                }
+            }
+
+            // 4. Проверяем счетчик собранных карт в строке (например: "5 из 5 карт собрано" или "8 of 8")
+            const progressEl = row.querySelector('.progress_info_bold, .badge_progress_info');
+            if (progressEl) {
+                const pText = progressEl.innerText.trim();
+                const m = pText.match(/(\d+)\s*(?:из|\/|of)\s*(\d+)/i);
+                if (m) {
+                    const owned = parseInt(m[1], 10);
+                    const total = parseInt(m[2], 10);
+                    if (total > 0 && total <= 30 && owned >= total) {
+                        return true;
+                    }
                 }
             }
 
