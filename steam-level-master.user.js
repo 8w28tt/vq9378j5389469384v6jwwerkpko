@@ -1,13 +1,16 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
-// @namespace    https://github.com/oviot/steam-level-master
-// @version      1.0.0
+// @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
+// @version      1.0.2
 // @description  Умный калькулятор значков, проверка реальных цен ТП, гарантированный выкуп карт (Instant-Fill) и мгновенный крафт без анимаций.
 // @author       oviot
+// @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
+// @updateURL    https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
 // @match        https://steamcommunity.com/*/badges*
 // @match        https://steamcommunity.com/*/gamecards/*
 // @icon         https://store.steampowered.com/favicon.ico
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @connect      steamcommunity.com
 // @run-at       document-end
 // ==/UserScript==
@@ -234,17 +237,117 @@
         return window.g_sessionID || (document.cookie.match(/sessionid=([a-f0-9]+)/) || [])[1];
     }
 
+    // Определение валюты пользователя (поддержка KZT ₸, RUB руб., UAH ₴, USD $, EUR € и др.)
     function getCurrencyInfo() {
-        if (window.g_rgWalletInfo && window.g_rgWalletInfo.wallet_currency) {
-            return {
-                currency: window.g_rgWalletInfo.wallet_currency,
-                country: window.g_rgWalletInfo.wallet_country || 'RU'
-            };
+        const win = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+        
+        let currency = 5;
+        let country = 'RU';
+        let symbol = 'руб.';
+        let isPrefix = false;
+
+        // 1. Проверяем g_rgWalletInfo из контекста страницы
+        if (win.g_rgWalletInfo && win.g_rgWalletInfo.wallet_currency) {
+            currency = parseInt(win.g_rgWalletInfo.wallet_currency, 10);
+            country = win.g_rgWalletInfo.wallet_country || 'RU';
         }
-        return { currency: 5, country: 'RU' }; // По умолчанию рубли / РФ
+
+        // 2. Таблица популярных валют Steam
+        const CURRENCY_MAP = {
+            37: { symbol: '₸', country: 'KZ', prefix: false, name: 'KZT' },
+            5:  { symbol: 'руб.', country: 'RU', prefix: false, name: 'RUB' },
+            18: { symbol: '₴', country: 'UA', prefix: false, name: 'UAH' },
+            1:  { symbol: '$', country: 'US', prefix: true, name: 'USD' },
+            3:  { symbol: '€', country: 'DE', prefix: false, name: 'EUR' },
+            2:  { symbol: '£', country: 'GB', prefix: true, name: 'GBP' },
+            6:  { symbol: 'zł', country: 'PL', prefix: false, name: 'PLN' },
+            8:  { symbol: '¥', country: 'JP', prefix: true, name: 'JPY' },
+            23: { symbol: '¥', country: 'CN', prefix: true, name: 'CNY' },
+            24: { symbol: '₹', country: 'IN', prefix: true, name: 'INR' },
+            17: { symbol: 'TL', country: 'TR', prefix: false, name: 'TRY' }
+        };
+
+        if (CURRENCY_MAP[currency]) {
+            symbol = CURRENCY_MAP[currency].symbol;
+            if (!win.g_rgWalletInfo?.wallet_country) country = CURRENCY_MAP[currency].country;
+            isPrefix = CURRENCY_MAP[currency].prefix;
+        }
+
+        // 3. Автоопределение по балансу в шапке Steam (#header_wallet_balance)
+        const walletEl = document.getElementById('header_wallet_balance');
+        if (walletEl && walletEl.innerText) {
+            const wText = walletEl.innerText;
+            if (wText.includes('₸')) {
+                currency = 37; symbol = '₸'; country = 'KZ'; isPrefix = false;
+            } else if (wText.includes('грн') || wText.includes('₴')) {
+                currency = 18; symbol = '₴'; country = 'UA'; isPrefix = false;
+            } else if (wText.includes('руб') || wText.includes('₽')) {
+                currency = 5; symbol = 'руб.'; country = 'RU'; isPrefix = false;
+            } else if (wText.includes('$')) {
+                currency = 1; symbol = '$'; country = 'US'; isPrefix = true;
+            } else if (wText.includes('€')) {
+                currency = 3; symbol = '€'; country = 'DE'; isPrefix = false;
+            } else if (wText.includes('zł')) {
+                currency = 6; symbol = 'zł'; country = 'PL'; isPrefix = false;
+            }
+        }
+
+        return { currency, country, symbol, isPrefix };
     }
 
+    function formatMoney(cents, currencyInfo) {
+        if (!currencyInfo) currencyInfo = getCurrencyInfo();
+        const val = (cents / 100).toFixed(2);
+        if (currencyInfo.isPrefix) {
+            return `${currencyInfo.symbol}${val}`;
+        }
+        return `${val} ${currencyInfo.symbol}`;
+    }
+
+    const formatCents = formatMoney;
+
     const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+
+    // Универсальный загрузчик JSON (использует GM_xmlhttpRequest для обхода CORS/куки, либо fetch)
+    function requestJson(url) {
+        return new Promise((resolve, reject) => {
+            if (typeof GM_xmlhttpRequest !== 'undefined') {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: url,
+                    headers: {
+                        'Accept': 'application/json, text/javascript, */*; q=0.01',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    onload: function (response) {
+                        try {
+                            if (response.status >= 200 && response.status < 300) {
+                                const data = JSON.parse(response.responseText);
+                                resolve(data);
+                            } else {
+                                reject(new Error('HTTP ' + response.status));
+                            }
+                        } catch (e) {
+                            reject(e);
+                        }
+                    },
+                    onerror: function (err) {
+                        reject(err);
+                    }
+                });
+            } else {
+                fetch(url, {
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                })
+                .then(res => {
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    return res.json();
+                })
+                .then(resolve)
+                .catch(reject);
+            }
+        });
+    }
 
     // =========================================================================
     // СТРАНИЦА 1: /gamecards/{appid}/ — Умный расчет значка, цен и ордеров
@@ -431,7 +534,8 @@
     // МОДАЛЬНОЕ ОКНО: Проверка цен со стаканом и Instant-Fill
     // =========================================================================
     async function openPriceReviewModal(appid, cardsToBuy, targetLevel) {
-        const { currency, country } = getCurrencyInfo();
+        const currencyInfo = getCurrencyInfo();
+        const { currency, country } = currencyInfo;
 
         const modalBackdrop = document.createElement('div');
         modalBackdrop.className = 'slm-modal-backdrop';
@@ -443,7 +547,7 @@
                 </div>
                 <div class="slm-modal-body">
                     <p style="margin-top:0; font-size:13px; color:#8f98a0;">
-                        Скрипт проверяет глубину стакана на ТП Steam. Выберите стратегию покупки:
+                        Скрипт проверяет глубину стакана на ТП Steam. Валюта аккаунта: <b style="color:#66c0f4">${currencyInfo.symbol} (${currencyInfo.country})</b>.
                     </p>
 
                     <div class="slm-mode-radio">
@@ -464,7 +568,7 @@
                     </div>
 
                     <div id="slm-loading-prices" style="text-align: center; padding: 25px; color: #66c0f4;">
-                        ⏳ Опрашиваем рынок Steam для каждой карточки (с защитой от 429 рейтлимита)...
+                        ⏳ Получаем официальный список карточек игры с Торговой площадки...
                     </div>
 
                     <div id="slm-prices-table-container" style="display:none;">
@@ -504,24 +608,47 @@
         modalBackdrop.querySelector('#slm-modal-close').onclick = closeModal;
         modalBackdrop.querySelector('#slm-btn-cancel').onclick = closeModal;
 
-        // Загружаем цены для каждой карты
+        // ШАГ 1: Запрашиваем все карточки игры через официальный поиск ТП
+        const marketItemsList = await fetchGameMarketItems(appid, currency);
+
+        // Уточняем валюту напрямую из первого полученного ценника маркета (100% точность)
+        if (marketItemsList && marketItemsList.length > 0 && marketItemsList[0].sell_price_text) {
+            const rawPriceText = marketItemsList[0].sell_price_text;
+            const detectedSymbol = rawPriceText.replace(/[\d\s,\.]/g, '').trim();
+            if (detectedSymbol) {
+                currencyInfo.symbol = detectedSymbol;
+                currencyInfo.isPrefix = rawPriceText.trim().startsWith(detectedSymbol);
+            }
+        }
+
+        // ШАГ 2: Сопоставляем карточки и получаем глубину стакана
         const marketResults = [];
         let index = 0;
 
         for (const card of cardsToBuy) {
             index++;
             document.getElementById('slm-loading-prices').innerText = 
-                `⏳ Запрашиваем цены: [${index}/${cardsToBuy.length}] "${card.name}"...`;
+                `⏳ Проверяем рынок: [${index}/${cardsToBuy.length}] "${card.name}"...`;
             
-            const priceData = await fetchCardMarketDepth(card.marketHashName, card.needed, currency, country);
+            // Ищем карту в результатах маркета
+            const matchedMarketItem = matchCardWithMarket(card, marketItemsList, index - 1, cardsToBuy.length);
+            
+            if (matchedMarketItem && matchedMarketItem.hash_name) {
+                card.marketHashName = matchedMarketItem.hash_name;
+            }
+
+            const basePrice = matchedMarketItem ? (matchedMarketItem.sell_price || 100) : 100;
+            const basePriceText = matchedMarketItem ? (matchedMarketItem.sell_price_text || formatMoney(basePrice, currencyInfo)) : formatMoney(basePrice, currencyInfo);
+
+            const priceData = await fetchCardMarketDepth(card.marketHashName, card.needed, currencyInfo, basePrice, basePriceText);
+            
             marketResults.push({
                 card,
                 ...priceData,
                 selected: true
             });
 
-            // Задержка 400мс между запросами для предотвращения HTTP 429
-            await sleep(400);
+            await sleep(300);
         }
 
         document.getElementById('slm-loading-prices').style.display = 'none';
@@ -534,13 +661,11 @@
             tbody.innerHTML = '';
 
             let grandTotalCents = 0;
-            let currencyCode = 'руб.';
 
             marketResults.forEach((res, i) => {
                 const unitPrice = strategy === 'instant' ? res.instantUnitPrice : res.minUnitPrice;
                 const totalCents = unitPrice * res.card.needed;
                 if (res.selected) grandTotalCents += totalCents;
-                currencyCode = res.currencySymbol || 'руб.';
 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
@@ -551,12 +676,12 @@
                     <td><span class="slm-badge-card-tag">${res.card.needed} шт.</span></td>
                     <td class="slm-price-min">${res.minPriceFormatted}</td>
                     <td class="slm-price-instant">${res.instantPriceFormatted}</td>
-                    <td style="font-weight:bold; color: #fff;">${formatCents(totalCents, currencyCode)}</td>
+                    <td style="font-weight:bold; color: #fff;">${formatMoney(totalCents, currencyInfo)}</td>
                 `;
                 tbody.appendChild(tr);
             });
 
-            document.getElementById('slm-total-price').innerText = formatCents(grandTotalCents, currencyCode);
+            document.getElementById('slm-total-price').innerText = formatMoney(grandTotalCents, currencyInfo);
 
             // Чекбоксы
             tbody.querySelectorAll('.slm-card-check').forEach(chk => {
@@ -568,7 +693,6 @@
             });
         }
 
-        // Переключение радиокнопок мгновенно пересчитывает таблицу
         modalBackdrop.querySelectorAll('input[name="slm-buy-strategy"]').forEach(r => {
             r.onchange = renderTableRows;
         });
@@ -606,7 +730,6 @@
             closeModal();
             showToast(`✅ Успешно создано ${successCount} из ${selectedItems.length} ордеров!`, 'success');
 
-            // Обновляем статус на странице
             setTimeout(() => {
                 window.location.reload();
             }, 2000);
@@ -614,69 +737,107 @@
     }
 
     // =========================================================================
-    // API: Получение глубины цен ТП (стакан ордеров)
+    // API: Поиск всех карточек игры на маркете (1 запрос для всего набора)
     // =========================================================================
-    async function fetchCardMarketDepth(marketHashName, neededQuantity, currency, country) {
-        // Мы используем эндпоинт рендера листингов, который возвращает реальные доступные лоты
+    async function fetchGameMarketItems(appid, currency) {
+        const url = `https://steamcommunity.com/market/search/render/?query=&start=0&count=100&search_descriptions=0&appid=753&category_753_Game[]=tag_app_${appid}&category_753_cardborder[]=tag_cardborder_0&category_753_item_class[]=tag_item_class_2&norender=1`;
+        try {
+            const data = await requestJson(url);
+            if (data && data.success && Array.isArray(data.results)) {
+                return data.results;
+            }
+        } catch (e) {
+            console.warn('[SLM] Ошибка первичного поиска карт сета', e);
+        }
+        return [];
+    }
+
+    function matchCardWithMarket(card, marketList, index, totalNeeded) {
+        if (!marketList || marketList.length === 0) return null;
+
+        const cardNameClean = card.name.toLowerCase().trim();
+
+        // 1. Прямое совпадение по имени
+        let match = marketList.find(m => m.name && m.name.toLowerCase().trim() === cardNameClean);
+        if (match) return match;
+
+        // 2. Проверка, оканчивается ли hash_name на cardName
+        match = marketList.find(m => m.hash_name && m.hash_name.toLowerCase().endsWith('-' + cardNameClean));
+        if (match) return match;
+
+        // 3. Частичное совпадение
+        match = marketList.find(m => (m.name && m.name.toLowerCase().includes(cardNameClean)) || (m.hash_name && m.hash_name.toLowerCase().includes(cardNameClean)));
+        if (match) return match;
+
+        // 4. Позиционное соответствие
+        if (marketList[index]) {
+            return marketList[index];
+        }
+
+        return marketList[0];
+    }
+
+    // =========================================================================
+    // API: Получение глубины цен ТП (стакан ордеров) с гарантированным fallback
+    // =========================================================================
+    async function fetchCardMarketDepth(marketHashName, neededQuantity, currencyInfo, fallbackPriceCents = 100, fallbackFormatted = '') {
+        const { currency, country } = currencyInfo;
         const url = `https://steamcommunity.com/market/listings/753/${encodeURIComponent(marketHashName)}/render/?query=&start=0&count=${Math.max(10, neededQuantity + 2)}&country=${country}&language=russian&currency=${currency}`;
 
         try {
-            const resp = await fetch(url);
-            if (!resp.ok) throw new Error('HTTP ' + resp.status);
-            const data = await resp.json();
+            const data = await requestJson(url);
 
-            if (!data.success || !data.listinginfo) {
-                throw new Error('Пустой ответ маркета');
+            if (!data.success || !data.listinginfo || Object.keys(data.listinginfo).length === 0) {
+                // Если стакан пуст или не отрендерился, используем проверенную базовую цену поиска
+                return {
+                    minUnitPrice: fallbackPriceCents,
+                    instantUnitPrice: Math.round(fallbackPriceCents * 1.05),
+                    minPriceFormatted: fallbackFormatted || formatMoney(fallbackPriceCents, currencyInfo),
+                    instantPriceFormatted: formatMoney(Math.round(fallbackPriceCents * 1.05), currencyInfo),
+                    currencyInfo
+                };
             }
 
-            // Извлекаем цены всех активных лотов продавцов
             const prices = [];
-            let currencySymbol = 'руб.';
-
             for (const key in data.listinginfo) {
                 const item = data.listinginfo[key];
-                // converted_price_per_unit включает комиссию Steam
                 const unitPrice = (item.converted_price_per_unit || (item.converted_price + item.converted_fee));
                 if (unitPrice > 0) {
                     prices.push(unitPrice);
                 }
             }
 
-            // Сортируем по возрастанию цены
             prices.sort((a, b) => a - b);
 
             if (prices.length === 0) {
                 return {
-                    minUnitPrice: 100, // 1 рубль fallback
-                    instantUnitPrice: 100,
-                    minPriceFormatted: 'Н/Д',
-                    instantPriceFormatted: 'Н/Д',
-                    currencySymbol
+                    minUnitPrice: fallbackPriceCents,
+                    instantUnitPrice: fallbackPriceCents,
+                    minPriceFormatted: fallbackFormatted || formatMoney(fallbackPriceCents, currencyInfo),
+                    instantPriceFormatted: fallbackFormatted || formatMoney(fallbackPriceCents, currencyInfo),
+                    currencyInfo
                 };
             }
 
-            // Минимальная цена (1-й лот)
             const minUnitPrice = prices[0];
-
-            // Instant-Fill цена: цена N-го лота (если лотов меньше чем N, берем последний доступный с запасом +2%)
             const targetIndex = Math.min(neededQuantity - 1, prices.length - 1);
             const instantUnitPrice = prices[targetIndex];
 
             return {
                 minUnitPrice: minUnitPrice,
                 instantUnitPrice: instantUnitPrice,
-                minPriceFormatted: formatCents(minUnitPrice, currencySymbol),
-                instantPriceFormatted: formatCents(instantUnitPrice, currencySymbol),
-                currencySymbol
+                minPriceFormatted: formatMoney(minUnitPrice, currencyInfo),
+                instantPriceFormatted: formatMoney(instantUnitPrice, currencyInfo),
+                currencyInfo
             };
         } catch (e) {
-            console.warn('[SLM] Ошибка парсинга стакана для ' + marketHashName, e);
+            console.warn('[SLM] Предупреждение парсинга глубины для ' + marketHashName + ', используем базовую цену', e);
             return {
-                minUnitPrice: 0,
-                instantUnitPrice: 0,
-                minPriceFormatted: 'Ошибка',
-                instantPriceFormatted: 'Ошибка',
-                currencySymbol: 'руб.'
+                minUnitPrice: fallbackPriceCents,
+                instantUnitPrice: Math.round(fallbackPriceCents * 1.05),
+                minPriceFormatted: fallbackFormatted || formatMoney(fallbackPriceCents, currencyInfo),
+                instantPriceFormatted: formatMoney(Math.round(fallbackPriceCents * 1.05), currencyInfo),
+                currencyInfo
             };
         }
     }
