@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.2.0
+// @version      1.2.1
 // @description  Умный калькулятор значков, каталог самых дешёвых сетов, проверка реальных цен ТП со стаканом (Instant-Fill) и мгновенный крафт без анимаций.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
@@ -1051,24 +1051,76 @@
 
             const btn = document.getElementById('slm-btn-execute-orders');
             btn.disabled = true;
-            btn.innerText = '⏳ Создаем ордеры на ТП...';
 
             let successCount = 0;
-            for (const item of selectedItems) {
+            let needsConfirmationCount = 0;
+            const total = selectedItems.length;
+
+            for (let i = 0; i < total; i++) {
+                const item = selectedItems[i];
+                btn.innerText = `⏳ Выставляем ордер [${i + 1}/${total}]...`;
                 const unitPrice = strategy === 'instant' ? item.instantUnitPrice : item.minUnitPrice;
                 const result = await createBuyOrder(item.card.marketHashName, item.card.needed, unitPrice, currency);
                 if (result.success) {
                     successCount++;
+                    if (result.requiresConfirmation) {
+                        needsConfirmationCount++;
+                    }
                 }
-                await sleep(500);
+
+                // Задержка против антифрода и рейт-лимита Steam (1.4 - 2.2 сек со случайным смещением)
+                if (i < total - 1) {
+                    const delay = 1400 + Math.floor(Math.random() * 800);
+                    await sleep(delay);
+                }
             }
 
-            closeModal();
-            showToast(`✅ Успешно создано ${successCount} из ${selectedItems.length} ордеров!`, 'success');
+            if (needsConfirmationCount > 0) {
+                // Steam потребовал 2FA-подтверждение на телефоне
+                const modalBody = modalBackdrop.querySelector('.slm-modal-body');
+                const modalFooter = modalBackdrop.querySelector('.slm-modal-footer');
+                if (modalFooter) modalFooter.style.display = 'none';
 
-            setTimeout(() => {
-                window.location.reload();
-            }, 2000);
+                if (modalBody) {
+                    modalBody.innerHTML = `
+                        <div style="text-align:center; padding: 25px 15px;">
+                            <div style="font-size: 46px; margin-bottom: 12px;">📱</div>
+                            <h3 style="color: #e5c158; font-size: 19px; margin-bottom: 10px;">Требуется подтверждение в Steam Mobile</h3>
+                            <p style="color: #c6d4df; font-size: 13px; line-height: 1.6; max-width: 500px; margin: 0 auto 16px auto;">
+                                Steam запросил подтверждение для <b>${needsConfirmationCount}</b> из ${total} ордеров в мобильном приложении на телефоне.
+                            </p>
+                            <div style="background: rgba(0,0,0,0.35); border: 1px solid rgba(102, 192, 244, 0.3); border-radius: 6px; padding: 14px; text-align: left; font-size: 13px; max-width: 460px; margin: 0 auto 20px auto;">
+                                <div style="color: #66c0f4; font-weight: bold; margin-bottom: 6px;">⚡ Как подтвердить всё за 3 секунды:</div>
+                                1. Откройте приложение <b>Steam</b> на телефоне.<br>
+                                2. Перейдите во вкладку <b>«Подтверждения»</b>.<br>
+                                3. Вверху справа поставьте галочку <b>«Выбрать всё»</b>.<br>
+                                4. Нажмите внизу зелёную кнопку <b>«Подтвердить выбранное»</b>.
+                            </div>
+                            <div style="display:flex; justify-content:center; gap: 12px;">
+                                <button class="slm-btn slm-btn-green" id="slm-btn-confirm-done" style="padding: 10px 22px; font-size: 14px;">
+                                    🔄 Я подтвердил на телефоне (проверить карточки)
+                                </button>
+                                <button class="slm-btn slm-btn-secondary" id="slm-btn-confirm-close" style="padding: 10px 18px;">
+                                    Закрыть
+                                </button>
+                            </div>
+                        </div>
+                    `;
+
+                    modalBackdrop.querySelector('#slm-btn-confirm-done').onclick = () => {
+                        window.location.reload();
+                    };
+                    modalBackdrop.querySelector('#slm-btn-confirm-close').onclick = closeModal;
+                }
+                showToast(`📱 Подтвердите ордеры в приложении Steam на телефоне!`, 'info', 7000);
+            } else {
+                closeModal();
+                showToast(`✅ Успешно создано ${successCount} из ${selectedItems.length} ордеров!`, 'success');
+
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1800);
+            }
         };
     }
 
@@ -1207,15 +1259,37 @@
             });
 
             const data = await resp.json();
+            const rawMsg = (data && data.message) ? String(data.message).toLowerCase() : '';
+            const requiresConfirmation = !!(
+                data.requires_confirmation === 1 || 
+                data.requires_confirmation === true ||
+                data.needs_mobile_confirmation ||
+                rawMsg.includes('подтвержден') ||
+                rawMsg.includes('confirmation') ||
+                rawMsg.includes('steam guard')
+            );
+
             if (data.success === 1) {
-                return { success: true, buy_orderid: data.buy_orderid };
+                return { 
+                    success: true, 
+                    buy_orderid: data.buy_orderid,
+                    requiresConfirmation: requiresConfirmation
+                };
+            } else if (requiresConfirmation || data.success === 29) {
+                // Если Steam вернул статус с необходимостью подтверждения
+                return { 
+                    success: true, 
+                    buy_orderid: data.buy_orderid || null, 
+                    requiresConfirmation: true,
+                    message: data.message 
+                };
             } else {
                 showToast(`Ошибка ордера для ${marketHashName}: ${data.message || 'Код ' + data.success}`, 'error');
-                return { success: false, message: data.message };
+                return { success: false, message: data.message, code: data.success, requiresConfirmation: false };
             }
         } catch (err) {
             console.error('[SLM] Ошибка отправки ордера', err);
-            return { success: false, message: err.message };
+            return { success: false, message: err.message, requiresConfirmation: false };
         }
     }
 
