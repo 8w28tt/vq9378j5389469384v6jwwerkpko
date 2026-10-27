@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.0.3
+// @version      1.0.4
 // @description  Умный калькулятор значков, проверка реальных цен ТП, гарантированный выкуп карт (Instant-Fill) и мгновенный крафт без анимаций.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
@@ -524,9 +524,6 @@
             let breakdownHtml = `<ul style="margin: 8px 0 0 20px; padding: 0;">`;
 
             cardsData.forEach(card => {
-                // Сколько нужно для targetLevel:
-                // Каждый уровень требует 1 карту. Если цель 5, а сейчас 2 -> нужно еще 3 карты каждого типа.
-                // Учитываем то, что уже лежит в инвентаре сверх текущего уровня.
                 const needed = Math.max(0, levelsToCraft - card.owned);
                 card.needed = needed;
                 totalCardsToBuy += needed;
@@ -535,17 +532,20 @@
             });
             breakdownHtml += `</ul>`;
 
-            const summaryEl = document.getElementById('slm-calc-summary');
-            if (levelsToCraft === 0) {
-                summaryEl.innerHTML = `<span style="color: #a4d007;">🎉 Значок уже прокачан до уровня ${currentLevel}!</span>`;
-                document.getElementById('slm-btn-check-prices').disabled = true;
-            } else {
-                summaryEl.innerHTML = `
-                    Для уровня <b>${targetLevel}</b> нужно скрафтить значок <b>${levelsToCraft}</b> раз(а).<br>
-                    Всего необходимо докупить карт: <b style="color: #66c0f4; font-size: 16px;">${totalCardsToBuy} шт.</b>
-                    ${breakdownHtml}
-                `;
-                document.getElementById('slm-btn-check-prices').disabled = (totalCardsToBuy === 0);
+            const summaryEl = panel.querySelector('#slm-calc-summary');
+            const checkBtn = panel.querySelector('#slm-btn-check-prices');
+            if (summaryEl) {
+                if (levelsToCraft === 0) {
+                    summaryEl.innerHTML = `<span style="color: #a4d007;">🎉 Значок уже прокачан до уровня ${currentLevel}!</span>`;
+                    if (checkBtn) checkBtn.disabled = true;
+                } else {
+                    summaryEl.innerHTML = `
+                        Для уровня <b>${targetLevel}</b> нужно скрафтить значок <b>${levelsToCraft}</b> раз(а).<br>
+                        Всего необходимо докупить карт: <b style="color: #66c0f4; font-size: 16px;">${totalCardsToBuy} шт.</b>
+                        ${breakdownHtml}
+                    `;
+                    if (checkBtn) checkBtn.disabled = (totalCardsToBuy === 0);
+                }
             }
         }
 
@@ -564,19 +564,25 @@
         updateCalculation();
 
         // Обработчик Turbo Craft
-        document.getElementById('slm-btn-turbo-craft').addEventListener('click', () => {
-            turboCraftBadge(appid);
-        });
+        const turboBtn = panel.querySelector('#slm-btn-turbo-craft');
+        if (turboBtn) {
+            turboBtn.addEventListener('click', () => {
+                turboCraftBadge(appid);
+            });
+        }
 
         // Обработчик проверки реальных цен
-        document.getElementById('slm-btn-check-prices').addEventListener('click', async () => {
-            const cardsToBuy = cardsData.filter(c => c.needed > 0);
-            if (cardsToBuy.length === 0) {
-                showToast('Все карты уже в наличии!', 'success');
-                return;
-            }
-            openPriceReviewModal(appid, cardsToBuy, targetLevel);
-        });
+        const checkBtn = panel.querySelector('#slm-btn-check-prices');
+        if (checkBtn) {
+            checkBtn.addEventListener('click', async () => {
+                const cardsToBuy = cardsData.filter(c => c.needed > 0);
+                if (cardsToBuy.length === 0) {
+                    showToast('Все карты уже в наличии!', 'success');
+                    return;
+                }
+                openPriceReviewModal(appid, cardsToBuy, targetLevel);
+            });
+        }
 
         return true;
     }
@@ -970,11 +976,6 @@
         }
     }
 
-    function formatCents(cents, symbol = 'руб.') {
-        const val = (cents / 100).toFixed(2);
-        return `${val} ${symbol}`;
-    }
-
     // =========================================================================
     // СТРАНИЦА ОБЩИХ ЗНАЧКОВ: /badges/
     // =========================================================================
@@ -1034,27 +1035,29 @@
         console.log('[SLM] Панель обзора значков успешно встроена!');
 
         // Массовый турбо-крафт
-        document.getElementById('slm-mass-craft-btn').onclick = async () => {
-            if (!confirm(`Вы уверены, что хотите мгновенно скрафтить все доступные значки (${readyBadges.length} шт.)?`)) {
-                return;
-            }
+        const massBtn = bar.querySelector('#slm-mass-craft-btn');
+        if (massBtn) {
+            massBtn.onclick = async () => {
+                if (!confirm(`Вы уверены, что хотите мгновенно скрафтить все доступные значки (${readyBadges.length} шт.)?`)) {
+                    return;
+                }
 
-            const btn = document.getElementById('slm-mass-craft-btn');
-            btn.disabled = true;
-            const progress = document.getElementById('slm-mass-craft-progress');
-            progress.style.display = 'block';
+                massBtn.disabled = true;
+                const progress = bar.querySelector('#slm-mass-craft-progress');
+                if (progress) progress.style.display = 'block';
 
-            let count = 0;
-            for (const item of readyBadges) {
-                count++;
-                progress.innerText = `⏳ Крафтим [${count}/${readyBadges.length}] AppID: ${item.appid}...`;
-                await turboCraftBadgeSilent(item.appid);
-                await sleep(400);
-            }
+                let count = 0;
+                for (const item of readyBadges) {
+                    count++;
+                    if (progress) progress.innerText = `⏳ Крафтим [${count}/${readyBadges.length}] AppID: ${item.appid}...`;
+                    await turboCraftBadgeSilent(item.appid);
+                    await sleep(400);
+                }
 
-            progress.innerHTML = `<b style="color: #a4d007;">🎉 Все доступные значки успешно скрафчены!</b>`;
-            setTimeout(() => window.location.reload(), 1500);
-        };
+                if (progress) progress.innerHTML = `<b style="color: #a4d007;">🎉 Все доступные значки успешно скрафчены!</b>`;
+                setTimeout(() => window.location.reload(), 1500);
+            };
+        }
 
         return true;
     }
