@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.0.4
-// @description  Умный калькулятор значков, проверка реальных цен ТП, гарантированный выкуп карт (Instant-Fill) и мгновенный крафт без анимаций.
+// @version      1.2.0
+// @description  Умный калькулятор значков, каталог самых дешёвых сетов, проверка реальных цен ТП со стаканом (Instant-Fill) и мгновенный крафт без анимаций.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
 // @updateURL    https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
@@ -20,6 +20,8 @@
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      steamcommunity.com
+// @connect      cdn.steam.tools
+// @connect      steam.tools
 // @run-at       document-end
 // ==/UserScript==
 
@@ -223,6 +225,134 @@
             font-size: 14px;
             animation: fadeIn 0.3s ease;
         }
+        /* Вкладки */
+        .slm-tabs {
+            display: flex;
+            gap: 8px;
+            border-bottom: 2px solid #2a475e;
+            margin-bottom: 16px;
+            padding-bottom: 2px;
+        }
+        .slm-tab-btn {
+            background: transparent;
+            border: none;
+            color: #8f98a0;
+            padding: 9px 18px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            border-radius: 6px 6px 0 0;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .slm-tab-btn:hover {
+            color: #c6d4df;
+            background: rgba(42, 71, 94, 0.3);
+        }
+        .slm-tab-btn.active {
+            color: #66c0f4;
+            background: #1b2838;
+            border-bottom: 3px solid #66c0f4;
+        }
+        .slm-tab-pane {
+            display: none;
+            animation: fadeIn 0.2s ease;
+        }
+        .slm-tab-pane.active {
+            display: block;
+        }
+        /* Калькулятор уровня */
+        .slm-calc-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 12px;
+            margin: 16px 0;
+        }
+        .slm-stat-card {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid #2a475e;
+            border-radius: 6px;
+            padding: 14px;
+            text-align: center;
+        }
+        .slm-stat-title {
+            font-size: 11px;
+            color: #8f98a0;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+        .slm-stat-value {
+            font-size: 22px;
+            font-weight: bold;
+            color: #66c0f4;
+        }
+        .slm-input {
+            background: #101822;
+            border: 1px solid #38506b;
+            color: #fff;
+            padding: 7px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            outline: none;
+        }
+        .slm-input:focus {
+            border-color: #66c0f4;
+            box-shadow: 0 0 6px rgba(102, 192, 244, 0.4);
+        }
+        /* Каталог сетов */
+        .slm-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+        .slm-filter-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 13px;
+        }
+        .slm-table-container {
+            max-height: 480px;
+            overflow-y: auto;
+            border: 1px solid #2a475e;
+            border-radius: 6px;
+        }
+        .slm-badge-pill {
+            display: inline-block;
+            padding: 2px 7px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .slm-badge-pill-done {
+            background: rgba(164, 208, 7, 0.2);
+            color: #a4d007;
+            border: 1px solid rgba(164, 208, 7, 0.4);
+        }
+        .slm-badge-pill-progress {
+            background: rgba(102, 192, 244, 0.2);
+            color: #66c0f4;
+            border: 1px solid rgba(102, 192, 244, 0.4);
+        }
+        .slm-badge-pill-new {
+            background: rgba(143, 152, 160, 0.2);
+            color: #8f98a0;
+            border: 1px solid rgba(143, 152, 160, 0.4);
+        }
+        .slm-pagination {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 10px;
+            font-size: 13px;
+            color: #8f98a0;
+        }
     `;
 
     // Внедряем стили
@@ -368,6 +498,149 @@
                 .catch(reject);
             }
         });
+    }
+
+    // =========================================================================
+    // МОДУЛЬ 1: КАЛЬКУЛЯТОР УРОВНЯ (ФОРМУЛЫ ОПЫТА STEAM)
+    // =========================================================================
+    function getXpForLevel(targetLevel) {
+        let total = 0;
+        for (let i = 0; i < targetLevel; i++) {
+            total += (Math.floor(i / 10) + 1) * 100;
+        }
+        return total;
+    }
+
+    function calculateLevelDiff(currentLevel, targetLevel) {
+        if (targetLevel <= currentLevel) {
+            return { currentXp: getXpForLevel(currentLevel), targetXp: getXpForLevel(currentLevel), xpNeeded: 0, badgesNeeded: 0 };
+        }
+        const currentXp = getXpForLevel(currentLevel);
+        const targetXp = getXpForLevel(targetLevel);
+        const xpNeeded = targetXp - currentXp;
+        const badgesNeeded = Math.ceil(xpNeeded / 100);
+        return { currentXp, targetXp, xpNeeded, badgesNeeded };
+    }
+
+    // =========================================================================
+    // МОДУЛЬ 2: ПАРСЕР И КЭШ ДЕШЕВЫХ СЕТОВ (14 000+ ИГР)
+    // =========================================================================
+    let cachedSetsList = null;
+    let cachedRates = null;
+
+    async function fetchCheapSets(currencyInfo) {
+        if (cachedSetsList && cachedRates) {
+            return processSets(cachedSetsList, cachedRates, currencyInfo);
+        }
+
+        try {
+            const storedSets = sessionStorage.getItem('slm_set_data');
+            const storedRates = sessionStorage.getItem('slm_currency_rates');
+            const storedTime = sessionStorage.getItem('slm_cache_time');
+            if (storedSets && storedRates && storedTime && (Date.now() - parseInt(storedTime, 10) < 3600000)) {
+                cachedSetsList = JSON.parse(storedSets);
+                cachedRates = JSON.parse(storedRates);
+                return processSets(cachedSetsList, cachedRates, currencyInfo);
+            }
+        } catch (e) {}
+
+        const [setData, rateData] = await Promise.all([
+            requestJson('https://cdn.steam.tools/data/set_data.json').catch(() => null),
+            requestJson('https://cdn.steam.tools/data/currency.json').catch(() => null)
+        ]);
+
+        if (setData && Array.isArray(setData.sets)) {
+            cachedSetsList = setData.sets;
+            cachedRates = rateData || {};
+            try {
+                sessionStorage.setItem('slm_set_data', JSON.stringify(cachedSetsList));
+                sessionStorage.setItem('slm_currency_rates', JSON.stringify(cachedRates));
+                sessionStorage.setItem('slm_cache_time', Date.now().toString());
+            } catch (e) {}
+            return processSets(cachedSetsList, cachedRates, currencyInfo);
+        }
+
+        return getFallbackSets(currencyInfo);
+    }
+
+    function processSets(sets, rates, currencyInfo) {
+        let rate = 1;
+        const codeMap = { 37: 'KZT', 5: 'RUB', 18: 'UAH', 1: 'USD', 3: 'EUR', 6: 'PLN' };
+        const code = codeMap[currencyInfo.currency] || 'USD';
+        if (rates && rates[code]) {
+            rate = rates[code];
+        } else if (currencyInfo.currency === 37) {
+            rate = 452;
+        } else if (currencyInfo.currency === 5) {
+            rate = 81;
+        }
+
+        const list = [];
+        for (let i = 0; i < sets.length; i++) {
+            const s = sets[i];
+            if (!s.normal || !s.normal.price || s.normal.price === '0.00' || s.normal.quantity < 20) {
+                continue;
+            }
+            const priceUsd = parseFloat(s.normal.price);
+            if (isNaN(priceUsd) || priceUsd <= 0) continue;
+
+            const count = parseInt(s.normal.count, 10) || 5;
+            const priceUserCurrency = priceUsd * rate;
+            const pricePerCard = priceUserCurrency / count;
+
+            list.push({
+                appid: String(s.appid),
+                game: s.game || 'App ' + s.appid,
+                count: count,
+                priceUsd: priceUsd,
+                priceUserCurrency: priceUserCurrency,
+                pricePerCard: pricePerCard,
+                priceFormatted: formatMoney(Math.round(priceUserCurrency * 100), currencyInfo),
+                perCardFormatted: formatMoney(Math.round(pricePerCard * 100), currencyInfo),
+                quantity: s.normal.quantity
+            });
+        }
+
+        list.sort((a, b) => a.priceUserCurrency - b.priceUserCurrency);
+        return list;
+    }
+
+    function getFallbackSets(currencyInfo) {
+        const fallbacks = [
+            { appid: '221540', game: 'Defense Grid 2', count: 9, priceUsd: 0.35 },
+            { appid: '730', game: 'Counter-Strike 2', count: 5, priceUsd: 0.25 },
+            { appid: '252490', game: 'Rust', count: 6, priceUsd: 0.32 },
+            { appid: '570', game: 'Dota 2', count: 8, priceUsd: 0.36 },
+            { appid: '440', game: 'Team Fortress 2', count: 9, priceUsd: 0.40 },
+            { appid: '620', game: 'Portal 2', count: 8, priceUsd: 0.38 },
+            { appid: '220', game: 'Half-Life 2', count: 8, priceUsd: 0.36 },
+            { appid: '304930', game: 'Unturned', count: 5, priceUsd: 0.22 },
+            { appid: '218620', game: 'PAYDAY 2', count: 7, priceUsd: 0.30 },
+            { appid: '4000', game: "Garry's Mod", count: 9, priceUsd: 0.39 },
+            { appid: '105600', game: 'Terraria', count: 9, priceUsd: 0.38 },
+            { appid: '291550', game: 'Brawlhalla', count: 6, priceUsd: 0.28 },
+            { appid: '230410', game: 'Warframe', count: 8, priceUsd: 0.35 }
+        ];
+        return processSets(fallbacks.map(f => ({ appid: f.appid, game: f.game, normal: { count: f.count, price: f.priceUsd.toString(), quantity: 100 } })), {}, currencyInfo);
+    }
+
+    async function openDirectBadgePurchaseModal(appid, targetLevel = 1) {
+        const currencyInfo = getCurrencyInfo();
+        showToast(`⏳ Загружаем карточки игры #${appid} с маркета...`, 'info');
+        const marketItems = await fetchGameMarketItems(appid, currencyInfo.currency);
+        if (!marketItems || marketItems.length === 0) {
+            showToast(`Не удалось найти карточки для AppID #${appid}`, 'error');
+            return;
+        }
+
+        const cardsToBuy = marketItems.map(item => ({
+            name: item.name || item.hash_name,
+            needed: targetLevel,
+            owned: 0,
+            marketHashName: item.hash_name
+        }));
+
+        openPriceReviewModal(appid, cardsToBuy, targetLevel);
     }
 
     // =========================================================================
@@ -985,18 +1258,48 @@
         const badgeRows = document.querySelectorAll('.badge_row');
         if (!badgeRows || badgeRows.length === 0) return false;
 
-        // Ищем готовые к крафту значки
+        const currencyInfo = getCurrencyInfo();
+
+        let allLoadedSets = null;
+        let filteredSets = [];
+        let currentPage = 1;
+        const pageSize = 20;
+
+        // 1. Считываем текущий уровень пользователя из шапки Steam
+        let userCurrentLevel = 1;
+        const lvlEl = document.querySelector('.friendPlayerLevelNum') 
+            || document.querySelector('.persona_level .friendPlayerLevelNum')
+            || document.querySelector('.playerAvatar .friendPlayerLevelNum');
+        if (lvlEl) {
+            userCurrentLevel = parseInt(lvlEl.innerText.trim(), 10) || 1;
+        }
+
+        // 2. Считываем значки пользователя и их текущие уровни
+        const userBadgeLevels = new Map();
         const readyBadges = [];
+
         badgeRows.forEach(row => {
-            const craftBtn = row.querySelector('.badge_craft_button, a[href*="ajaxcraftbadge"]');
             const link = row.querySelector('a.badge_row_overlay');
-            if (craftBtn && link) {
-                const match = link.href.match(/\/gamecards\/(\d+)/);
-                if (match) readyBadges.push({ appid: match[1], row });
+            if (!link) return;
+            const match = link.href.match(/\/gamecards\/(\d+)/);
+            if (!match) return;
+            const appid = match[1];
+
+            let lvl = 0;
+            const desc = row.querySelector('.badge_info_description');
+            if (desc) {
+                const m = desc.innerText.match(/(?:Уровень|Level)\s*(\d+)/i);
+                if (m) lvl = parseInt(m[1], 10);
+            }
+            userBadgeLevels.set(appid, lvl);
+
+            const craftBtn = row.querySelector('.badge_craft_button, a[href*="ajaxcraftbadge"]');
+            if (craftBtn) {
+                readyBadges.push({ appid, row });
             }
         });
 
-        // Создаем шапку-тулбар
+        // 3. Ищем контейнер для шапки
         const header = document.querySelector('.badges_sheet') 
             || document.querySelector('.profile_badges_header')
             || document.querySelector('.badge_row_list')
@@ -1012,18 +1315,117 @@
         bar.className = 'slm-panel';
         bar.innerHTML = `
             <div class="slm-title">
-                <span>🚀 Steam Level Master — Обзор значков</span>
-                <span style="font-size: 13px; color: #a4d007;">Готово к крафту: <b>${readyBadges.length}</b> значков</span>
+                <span>🚀 Steam Level Master</span>
+                <span style="font-size: 13px; color: #8f98a0;">Ваш уровень: <b style="color:#66c0f4; font-size:15px;">${userCurrentLevel}</b> | Валюта: <b style="color:#a4d007">${currencyInfo.symbol}</b></span>
             </div>
-            <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
-                <button class="slm-btn slm-btn-green" id="slm-mass-craft-btn" ${readyBadges.length > 0 ? '' : 'disabled'}>
-                    ⚡ Скрафтить ВСЕ готовые значки пачкой (${readyBadges.length})
-                </button>
-                <span style="font-size: 13px; color: #8f98a0;">
-                    Кликните на любой значок ниже, чтобы открыть калькулятор карт от 1 до 5 уровня и автозакупку.
-                </span>
+
+            <!-- Вкладки панели -->
+            <div class="slm-tabs">
+                <button class="slm-tab-btn active" data-tab="calc">📊 Калькулятор уровня</button>
+                <button class="slm-tab-btn" data-tab="catalog">🏷️ Каталог дешёвых сетов (14 000+)</button>
+                <button class="slm-tab-btn" data-tab="craft">⚡ Быстрый крафт (${readyBadges.length} готово)</button>
             </div>
-            <div id="slm-mass-craft-progress" style="margin-top: 10px; display: none; font-size: 13px; color: #66c0f4;"></div>
+
+            <!-- ВКЛАДКА 1: КАЛЬКУЛЯТОР УРОВНЯ -->
+            <div class="slm-tab-pane active" id="slm-pane-calc">
+                <div style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap; background: rgba(0,0,0,0.25); padding: 14px; border-radius: 6px;">
+                    <div>
+                        <span style="font-size: 13px; color: #8f98a0;">Текущий уровень:</span><br>
+                        <input type="number" id="slm-calc-curr-input" class="slm-input" value="${userCurrentLevel}" min="0" max="5000" style="width: 90px; margin-top:4px;">
+                    </div>
+                    <div style="font-size: 20px; color: #38506b; padding-top: 15px;">➔</div>
+                    <div>
+                        <span style="font-size: 13px; color: #8f98a0;">Желаемый уровень:</span><br>
+                        <input type="number" id="slm-calc-target-input" class="slm-input" value="${Math.max(userCurrentLevel + 10, 50)}" min="1" max="5000" style="width: 90px; margin-top:4px;">
+                    </div>
+                    <div style="padding-top: 18px;">
+                        <button class="slm-btn" id="slm-calc-execute-btn">🧮 Рассчитать план</button>
+                    </div>
+                </div>
+
+                <div class="slm-calc-grid">
+                    <div class="slm-stat-card">
+                        <div class="slm-stat-title">Опыта потребуется</div>
+                        <div class="slm-stat-value" id="slm-stat-xp">...</div>
+                    </div>
+                    <div class="slm-stat-card">
+                        <div class="slm-stat-title">Значков (крафтов)</div>
+                        <div class="slm-stat-value" id="slm-stat-badges" style="color:#a4d007;">...</div>
+                    </div>
+                    <div class="slm-stat-card">
+                        <div class="slm-stat-title">Оценочный бюджет</div>
+                        <div class="slm-stat-value" id="slm-stat-cost" style="color:#e5c158;">...</div>
+                    </div>
+                </div>
+
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px;">
+                    <div style="font-size: 12px; color: #8f98a0; line-height: 1.5;">
+                        💡 <b>Совет:</b> Сезонный значок в <a href="https://store.steampowered.com/points/shop" target="_blank" style="color:#66c0f4;">Магазине очков Steam</a> дает до 40 уровней (4 000 XP) без покупки карт!
+                    </div>
+                    <button class="slm-btn slm-btn-green" id="slm-btn-go-to-cheap-catalog">
+                        🏷️ Посмотреть дешёвые сеты для этой цели »
+                    </button>
+                </div>
+            </div>
+
+            <!-- ВКЛАДКА 2: КАТАЛОГ ДЕШЕВЫХ СЕТОВ -->
+            <div class="slm-tab-pane" id="slm-pane-catalog">
+                <div class="slm-toolbar">
+                    <div class="slm-filter-group">
+                        <input type="text" id="slm-catalog-search" class="slm-input" placeholder="🔍 Поиск игры..." style="width: 220px;">
+                        <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                            <input type="checkbox" id="slm-catalog-hide-done" checked>
+                            <span>Скрыть завершённые (ур. 5)</span>
+                        </label>
+                        <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                            <input type="checkbox" id="slm-catalog-only-5">
+                            <span>Только 5 карт</span>
+                        </label>
+                    </div>
+                    <button class="slm-btn slm-btn-secondary" id="slm-catalog-refresh-btn" style="padding:6px 12px; font-size:12px;">
+                        🔄 Обновить цены базы
+                    </button>
+                </div>
+
+                <div id="slm-catalog-loader" style="text-align: center; padding: 30px; color: #66c0f4;">
+                    ⏳ Загружаем каталог цен карточек (14 000+ игр)...
+                </div>
+
+                <div class="slm-table-container" id="slm-catalog-table-wrap" style="display:none;">
+                    <table class="slm-table">
+                        <thead>
+                            <tr>
+                                <th>Игра</th>
+                                <th width="70">Карт</th>
+                                <th width="120">Цена сета</th>
+                                <th width="110">За карту</th>
+                                <th width="110">Ваш значок</th>
+                                <th width="180">Действие</th>
+                            </tr>
+                        </thead>
+                        <tbody id="slm-catalog-tbody"></tbody>
+                    </table>
+                </div>
+
+                <div class="slm-pagination" id="slm-catalog-pagination" style="display:none;">
+                    <button class="slm-btn slm-btn-secondary" id="slm-page-prev" style="padding:5px 12px;">« Назад</button>
+                    <span id="slm-page-text">Страница 1 из 1</span>
+                    <button class="slm-btn slm-btn-secondary" id="slm-page-next" style="padding:5px 12px;">Вперёд »</button>
+                </div>
+            </div>
+
+            <!-- ВКЛАДКА 3: БЫСТРЫЙ КРАФТ (TURBO CRAFT) -->
+            <div class="slm-tab-pane" id="slm-pane-craft">
+                <div style="background: rgba(0,0,0,0.25); padding: 18px; border-radius: 6px;">
+                    <div style="font-size: 15px; margin-bottom: 12px;">
+                        Готово к крафту на текущей странице: <b style="color: #a4d007; font-size: 18px;">${readyBadges.length}</b> значков.
+                    </div>
+                    <button class="slm-btn slm-btn-green" id="slm-mass-craft-btn" ${readyBadges.length > 0 ? '' : 'disabled'}>
+                        ⚡ Скрафтить ВСЕ готовые значки пачкой (${readyBadges.length})
+                    </button>
+                    <div id="slm-mass-craft-progress" style="margin-top: 14px; display: none; font-size: 13px; color: #66c0f4;"></div>
+                </div>
+            </div>
         `;
 
         if (header === document.body || header.id === 'mainContents') {
@@ -1034,7 +1436,227 @@
 
         console.log('[SLM] Панель обзора значков успешно встроена!');
 
-        // Массовый турбо-крафт
+        // --- ЛОГИКА ПЕРЕКЛЮЧЕНИЯ ВКЛАДОК ---
+        const tabBtns = bar.querySelectorAll('.slm-tab-btn');
+        const tabPanes = {
+            calc: bar.querySelector('#slm-pane-calc'),
+            catalog: bar.querySelector('#slm-pane-catalog'),
+            craft: bar.querySelector('#slm-pane-craft')
+        };
+
+        function switchTab(tabKey) {
+            tabBtns.forEach(b => b.classList.toggle('active', b.dataset.tab === tabKey));
+            for (const key in tabPanes) {
+                if (tabPanes[key]) tabPanes[key].classList.toggle('active', key === tabKey);
+            }
+            if (tabKey === 'catalog' && !allLoadedSets) {
+                loadCatalogData();
+            }
+        }
+
+        tabBtns.forEach(btn => {
+            btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+        });
+
+        // --- ЛОГИКА КАЛЬКУЛЯТОРА УРОВНЯ ---
+        const currInput = bar.querySelector('#slm-calc-curr-input');
+        const targetInput = bar.querySelector('#slm-calc-target-input');
+        const statXp = bar.querySelector('#slm-stat-xp');
+        const statBadges = bar.querySelector('#slm-stat-badges');
+        const statCost = bar.querySelector('#slm-stat-cost');
+
+        function updateLevelCalculator() {
+            const currLvl = parseInt(currInput.value, 10) || 0;
+            const targetLvl = parseInt(targetInput.value, 10) || 1;
+            const diff = calculateLevelDiff(currLvl, targetLvl);
+
+            statXp.innerText = diff.xpNeeded > 0 ? `+${diff.xpNeeded.toLocaleString()} XP` : '0 XP';
+            statBadges.innerText = `${diff.badgesNeeded} шт.`;
+
+            // Если база сетов уже загружена, считаем точную стоимость по ТОП-N дешевых сетов
+            if (allLoadedSets && allLoadedSets.length > 0) {
+                const availableCheap = allLoadedSets.filter(s => (userBadgeLevels.get(s.appid) || 0) < 5);
+                let estimatedCost = 0;
+                const countToTake = Math.min(diff.badgesNeeded, availableCheap.length);
+                for (let i = 0; i < countToTake; i++) {
+                    estimatedCost += availableCheap[i].priceUserCurrency;
+                }
+                // Если нужно больше чем доступно в базе, экстраполируем
+                if (diff.badgesNeeded > countToTake && countToTake > 0) {
+                    const avgPrice = estimatedCost / countToTake;
+                    estimatedCost += (diff.badgesNeeded - countToTake) * avgPrice;
+                }
+                statCost.innerText = formatMoney(Math.round(estimatedCost * 100), currencyInfo);
+            } else {
+                // Примерная оценка до загрузки базы (~0.25$ за сет)
+                const approxRate = currencyInfo.currency === 37 ? 452 : (currencyInfo.currency === 5 ? 81 : 1);
+                const approxCost = diff.badgesNeeded * 0.25 * approxRate;
+                statCost.innerText = `~${formatMoney(Math.round(approxCost * 100), currencyInfo)}`;
+            }
+        }
+
+        bar.querySelector('#slm-calc-execute-btn').addEventListener('click', updateLevelCalculator);
+        currInput.addEventListener('input', updateLevelCalculator);
+        targetInput.addEventListener('input', updateLevelCalculator);
+
+        bar.querySelector('#slm-btn-go-to-cheap-catalog').addEventListener('click', () => {
+            switchTab('catalog');
+        });
+
+        updateLevelCalculator();
+
+        // --- ЛОГИКА КАТАЛОГА ДЕШЕВЫХ СЕТОВ ---
+        async function loadCatalogData(forceRefresh = false) {
+            const loader = bar.querySelector('#slm-catalog-loader');
+            const tableWrap = bar.querySelector('#slm-catalog-table-wrap');
+            const pagination = bar.querySelector('#slm-catalog-pagination');
+
+            loader.style.display = 'block';
+            tableWrap.style.display = 'none';
+            pagination.style.display = 'none';
+
+            if (forceRefresh) {
+                try {
+                    sessionStorage.removeItem('slm_set_data');
+                    sessionStorage.removeItem('slm_currency_rates');
+                } catch (e) {}
+            }
+
+            try {
+                allLoadedSets = await fetchCheapSets(currencyInfo);
+                updateLevelCalculator(); // Пересчитываем точную стоимость с живыми данными
+                applyCatalogFilters();
+            } catch (err) {
+                console.error('[SLM] Ошибка загрузки каталога', err);
+                loader.innerHTML = `<span style="color:#e74c3c;">Не удалось загрузить цены маркета. Попробуйте еще раз.</span>`;
+            }
+        }
+
+        function applyCatalogFilters() {
+            if (!allLoadedSets) return;
+            const searchVal = bar.querySelector('#slm-catalog-search').value.toLowerCase().trim();
+            const hideDone = bar.querySelector('#slm-catalog-hide-done').checked;
+            const only5 = bar.querySelector('#slm-catalog-only-5').checked;
+
+            filteredSets = allLoadedSets.filter(item => {
+                if (searchVal && !item.game.toLowerCase().includes(searchVal)) {
+                    return false;
+                }
+                const userLvl = userBadgeLevels.get(item.appid) || 0;
+                if (hideDone && userLvl >= 5) {
+                    return false;
+                }
+                if (only5 && item.count !== 5) {
+                    return false;
+                }
+                return true;
+            });
+
+            currentPage = 1;
+            renderCatalogTable();
+        }
+
+        function renderCatalogTable() {
+            const loader = bar.querySelector('#slm-catalog-loader');
+            const tableWrap = bar.querySelector('#slm-catalog-table-wrap');
+            const pagination = bar.querySelector('#slm-catalog-pagination');
+            const tbody = bar.querySelector('#slm-catalog-tbody');
+            const pageText = bar.querySelector('#slm-page-text');
+
+            loader.style.display = 'none';
+            tableWrap.style.display = 'block';
+            pagination.style.display = 'flex';
+
+            tbody.innerHTML = '';
+            const totalPages = Math.max(1, Math.ceil(filteredSets.length / pageSize));
+            if (currentPage > totalPages) currentPage = totalPages;
+
+            pageText.innerText = `Страница ${currentPage} из ${totalPages} (${filteredSets.length} сетов)`;
+            bar.querySelector('#slm-page-prev').disabled = (currentPage <= 1);
+            bar.querySelector('#slm-page-next').disabled = (currentPage >= totalPages);
+
+            const startIdx = (currentPage - 1) * pageSize;
+            const pageItems = filteredSets.slice(startIdx, startIdx + pageSize);
+
+            if (pageItems.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:20px; color:#8f98a0;">По заданным фильтрам ничего не найдено.</td></tr>`;
+                return;
+            }
+
+            pageItems.forEach(item => {
+                const userLvl = userBadgeLevels.get(item.appid) || 0;
+                let statusBadge = `<span class="slm-badge-pill slm-badge-pill-new">0/5</span>`;
+                if (userLvl >= 5) {
+                    statusBadge = `<span class="slm-badge-pill slm-badge-pill-done">Завершён (5/5)</span>`;
+                } else if (userLvl > 0) {
+                    statusBadge = `<span class="slm-badge-pill slm-badge-pill-progress">${userLvl}/5</span>`;
+                }
+
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>
+                        <a href="https://steamcommunity.com/my/gamecards/${item.appid}/" target="_blank" style="color:#66c0f4; font-weight:bold; text-decoration:none;">
+                            ${item.game}
+                        </a>
+                        <div style="font-size:11px; color:#8f98a0;">AppID: ${item.appid}</div>
+                    </td>
+                    <td><span class="slm-badge-card-tag">${item.count} карт</span></td>
+                    <td style="font-weight:bold; color:#a4d007;">${item.priceFormatted}</td>
+                    <td style="color:#c6d4df;">${item.perCardFormatted}</td>
+                    <td>${statusBadge}</td>
+                    <td>
+                        <div style="display:flex; gap:6px;">
+                            <a href="https://steamcommunity.com/my/gamecards/${item.appid}/" target="_blank" class="slm-btn slm-btn-secondary" style="padding:4px 8px; font-size:11px;">
+                                🔗 Открыть
+                            </a>
+                            <button class="slm-btn slm-btn-green slm-buy-direct-btn" data-appid="${item.appid}" style="padding:4px 8px; font-size:11px;">
+                                🛒 Купить
+                            </button>
+                        </div>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            // Обработчик кнопки покупки прямо из каталога
+            tbody.querySelectorAll('.slm-buy-direct-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const appid = e.currentTarget.dataset.appid;
+                    openDirectBadgePurchaseModal(appid, 1);
+                });
+            });
+        }
+
+        // События пагинации и фильтров
+        bar.querySelector('#slm-page-prev').addEventListener('click', () => {
+            if (currentPage > 1) {
+                currentPage--;
+                renderCatalogTable();
+                tableWrap.scrollTop = 0;
+            }
+        });
+        bar.querySelector('#slm-page-next').addEventListener('click', () => {
+            const totalPages = Math.ceil(filteredSets.length / pageSize);
+            if (currentPage < totalPages) {
+                currentPage++;
+                renderCatalogTable();
+                tableWrap.scrollTop = 0;
+            }
+        });
+        bar.querySelector('#slm-catalog-search').addEventListener('input', applyCatalogFilters);
+        bar.querySelector('#slm-catalog-hide-done').addEventListener('change', applyCatalogFilters);
+        bar.querySelector('#slm-catalog-only-5').addEventListener('change', applyCatalogFilters);
+        bar.querySelector('#slm-catalog-refresh-btn').addEventListener('click', () => loadCatalogData(true));
+
+        // Фоновая предварительная подгрузка цен
+        setTimeout(() => {
+            fetchCheapSets(currencyInfo).then(sets => {
+                allLoadedSets = sets;
+                updateLevelCalculator();
+            }).catch(() => {});
+        }, 800);
+
+        // --- ЛОГИКА ТУРБО-КРАФТА ---
         const massBtn = bar.querySelector('#slm-mass-craft-btn');
         if (massBtn) {
             massBtn.onclick = async () => {
