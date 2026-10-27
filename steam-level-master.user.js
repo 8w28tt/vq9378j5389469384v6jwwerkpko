@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.2.2
+// @version      1.2.3
 // @description  Умный калькулятор значков, каталог самых дешёвых сетов, проверка реальных цен ТП со стаканом (Instant-Fill) и мгновенный крафт без анимаций.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
@@ -511,15 +511,129 @@
         return total;
     }
 
-    function calculateLevelDiff(currentLevel, targetLevel) {
-        if (targetLevel <= currentLevel) {
-            return { currentXp: getXpForLevel(currentLevel), targetXp: getXpForLevel(currentLevel), xpNeeded: 0, badgesNeeded: 0 };
+    function parseExactUserXp(userLevel) {
+        const baseXp = getXpForLevel(userLevel);
+        const bracketXp = (Math.floor(userLevel / 10) + 1) * 100;
+        const nextLevelTotalXp = baseXp + bracketXp;
+
+        let exactCurrentXp = null;
+        let xpToNextLevel = null;
+
+        // Контейнеры шапки профиля/значков Steam
+        const headerContainers = [
+            document.querySelector('.profile_badges_header'),
+            document.querySelector('.badge_details_set'),
+            document.querySelector('.badges_sheet'),
+            document.querySelector('.profile_content'),
+            document.querySelector('#mainContents'),
+            document.body
+        ].filter(Boolean);
+
+        for (const container of headerContainers) {
+            const text = (container.innerText || '').replace(/\u00A0/g, ' ');
+
+            // 1. Поиск: "Осталось 55 ед. опыта до следующего уровня" / "55 XP to next level" / "55 XP needed to reach"
+            if (xpToNextLevel === null) {
+                const m1 = text.match(/(\d[\d\s,]*)\s*(?:ед\.?\s*опыта|XP)\s*(?:до\s*(?:следующего\s*уровня|уровня|\d+\s*ур)|needed to reach|to next level|to level)/i);
+                if (m1) {
+                    const val = parseInt(m1[1].replace(/[\s,]/g, ''), 10);
+                    if (val > 0 && val <= bracketXp) {
+                        xpToNextLevel = val;
+                    }
+                }
+            }
+
+            if (xpToNextLevel === null) {
+                const m2 = text.match(/(?:до\s*(?:следующего\s*уровня|уровня|\d+\s*ур)|to next level|needed to reach)[^0-9]*(\d[\d\s,]*)\s*(?:ед\.?\s*опыта|XP)/i);
+                if (m2) {
+                    const val = parseInt(m2[1].replace(/[\s,]/g, ''), 10);
+                    if (val > 0 && val <= bracketXp) {
+                        xpToNextLevel = val;
+                    }
+                }
+            }
+
+            // 2. Прогресс-бар "145 / 200 XP"
+            if (exactCurrentXp === null && xpToNextLevel === null) {
+                const mProg = text.match(/(\d[\d\s,]*)\s*\/\s*(\d[\d\s,]*)\s*(?:ед\.?\s*опыта|XP)/i);
+                if (mProg) {
+                    const currentOnBracket = parseInt(mProg[1].replace(/[\s,]/g, ''), 10);
+                    const totalOnBracket = parseInt(mProg[2].replace(/[\s,]/g, ''), 10);
+                    if (totalOnBracket >= 100 && currentOnBracket <= totalOnBracket) {
+                        xpToNextLevel = totalOnBracket - currentOnBracket;
+                        exactCurrentXp = baseXp + currentOnBracket;
+                    }
+                }
+            }
+
+            // 3. Общий опыт: "2 345 ед. опыта" / "2,345 XP"
+            if (exactCurrentXp === null) {
+                const descEls = container.querySelectorAll('.badge_info_description, .profile_xp_block, .persona_level, p, div');
+                for (const el of descEls) {
+                    const elText = (el.innerText || '').replace(/\u00A0/g, ' ').trim();
+                    const mTotal = elText.match(/^([\d\s,]+)\s*(?:ед\.?\s*опыта|XP)$/i)
+                        || elText.match(/(?:всего|total)?\s*([\d\s,]+)\s*(?:ед\.?\s*опыта|XP)/i);
+                    if (mTotal) {
+                        const val = parseInt(mTotal[1].replace(/[\s,]/g, ''), 10);
+                        if (val >= baseXp && val <= nextLevelTotalXp) {
+                            exactCurrentXp = val;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (exactCurrentXp !== null || xpToNextLevel !== null) {
+                break;
+            }
         }
-        const currentXp = getXpForLevel(currentLevel);
+
+        // Согласование значений
+        if (xpToNextLevel !== null && exactCurrentXp === null) {
+            exactCurrentXp = nextLevelTotalXp - xpToNextLevel;
+        } else if (exactCurrentXp !== null && xpToNextLevel === null) {
+            xpToNextLevel = Math.max(0, nextLevelTotalXp - exactCurrentXp);
+        } else if (exactCurrentXp === null && xpToNextLevel === null) {
+            exactCurrentXp = baseXp;
+            xpToNextLevel = bracketXp;
+        }
+
+        return {
+            exactCurrentXp,
+            xpToNextLevel,
+            bracketXp,
+            baseXp,
+            currentProgress: Math.max(0, bracketXp - xpToNextLevel)
+        };
+    }
+
+    function calculateExactLevelDiff(currentLevel, targetLevel, exactCurrentXp = null) {
+        const baseXp = getXpForLevel(currentLevel);
+        const currXp = (exactCurrentXp !== null && !isNaN(exactCurrentXp)) ? exactCurrentXp : baseXp;
         const targetXp = getXpForLevel(targetLevel);
-        const xpNeeded = targetXp - currentXp;
+
+        if (targetLevel <= currentLevel || targetXp <= currXp) {
+            return {
+                currentXp: currXp,
+                targetXp: currXp,
+                xpNeeded: 0,
+                badgesNeeded: 0,
+                surplusXp: 0
+            };
+        }
+
+        const xpNeeded = targetXp - currXp;
         const badgesNeeded = Math.ceil(xpNeeded / 100);
-        return { currentXp, targetXp, xpNeeded, badgesNeeded };
+        const xpGained = badgesNeeded * 100;
+        const surplusXp = xpGained - xpNeeded; // Запас опыта на следующий уровень
+
+        return {
+            currentXp: currXp,
+            targetXp,
+            xpNeeded,
+            badgesNeeded,
+            surplusXp
+        };
     }
 
     // =========================================================================
@@ -1339,7 +1453,7 @@
         let currentPage = 1;
         const pageSize = 20;
 
-        // 1. Считываем текущий уровень пользователя из шапки Steam
+        // 1. Считываем текущий уровень пользователя и точный опыт из шапки Steam
         let userCurrentLevel = 1;
         const lvlEl = document.querySelector('.friendPlayerLevelNum') 
             || document.querySelector('.persona_level .friendPlayerLevelNum')
@@ -1347,6 +1461,9 @@
         if (lvlEl) {
             userCurrentLevel = parseInt(lvlEl.innerText.trim(), 10) || 1;
         }
+
+        // Парсим точные единицы опыта пользователя и остаток до след. уровня
+        const userXpInfo = parseExactUserXp(userCurrentLevel);
 
         // 2. Считываем значки пользователя и их текущие уровни
         const userBadgeLevels = new Map();
@@ -1462,7 +1579,12 @@
         bar.innerHTML = `
             <div class="slm-title">
                 <span>🚀 Steam Level Master</span>
-                <span style="font-size: 13px; color: #8f98a0;">Ваш уровень: <b style="color:#66c0f4; font-size:15px;">${userCurrentLevel}</b> | Валюта: <b style="color:#a4d007">${currencyInfo.symbol}</b></span>
+                <span style="font-size: 13px; color: #8f98a0;">
+                    Ваш уровень: <b style="color:#66c0f4; font-size:15px;">${userCurrentLevel}</b> 
+                    <span style="font-size:12px; color:#c6d4df;">(${userXpInfo.exactCurrentXp.toLocaleString()} XP)</span> | 
+                    До след. ур: <b style="color:#a4d007;">${userXpInfo.xpToNextLevel} XP</b> | 
+                    Валюта: <b style="color:#a4d007">${currencyInfo.symbol}</b>
+                </span>
             </div>
 
             <!-- Вкладки панели -->
@@ -1493,14 +1615,17 @@
                     <div class="slm-stat-card">
                         <div class="slm-stat-title">Опыта потребуется</div>
                         <div class="slm-stat-value" id="slm-stat-xp">...</div>
+                        <div id="slm-stat-xp-sub" style="font-size: 11px; color: #8f98a0; margin-top: 4px; line-height: 1.4;"></div>
                     </div>
                     <div class="slm-stat-card">
                         <div class="slm-stat-title">Значков (крафтов)</div>
                         <div class="slm-stat-value" id="slm-stat-badges" style="color:#a4d007;">...</div>
+                        <div id="slm-stat-badges-sub" style="font-size: 11px; color: #8f98a0; margin-top: 4px; line-height: 1.4;"></div>
                     </div>
                     <div class="slm-stat-card">
                         <div class="slm-stat-title">Оценочный бюджет</div>
                         <div class="slm-stat-value" id="slm-stat-cost" style="color:#e5c158;">...</div>
+                        <div id="slm-stat-cost-sub" style="font-size: 11px; color: #8f98a0; margin-top: 4px; line-height: 1.4;"></div>
                     </div>
                 </div>
 
@@ -1608,16 +1733,41 @@
         const currInput = bar.querySelector('#slm-calc-curr-input');
         const targetInput = bar.querySelector('#slm-calc-target-input');
         const statXp = bar.querySelector('#slm-stat-xp');
+        const statXpSub = bar.querySelector('#slm-stat-xp-sub');
         const statBadges = bar.querySelector('#slm-stat-badges');
+        const statBadgesSub = bar.querySelector('#slm-stat-badges-sub');
         const statCost = bar.querySelector('#slm-stat-cost');
+        const statCostSub = bar.querySelector('#slm-stat-cost-sub');
 
         function updateLevelCalculator() {
             const currLvl = parseInt(currInput.value, 10) || 0;
             const targetLvl = parseInt(targetInput.value, 10) || 1;
-            const diff = calculateLevelDiff(currLvl, targetLvl);
 
-            statXp.innerText = diff.xpNeeded > 0 ? `+${diff.xpNeeded.toLocaleString()} XP` : '0 XP';
+            // Если выбран текущий уровень аккаунта, используем точный опыт и остаток до след. уровня
+            const isActualUserLevel = (currLvl === userCurrentLevel);
+            const exactXp = isActualUserLevel ? userXpInfo.exactCurrentXp : null;
+            const diff = calculateExactLevelDiff(currLvl, targetLvl, exactXp);
+
+            if (diff.xpNeeded > 0) {
+                statXp.innerText = `+${diff.xpNeeded.toLocaleString()} XP`;
+                if (isActualUserLevel) {
+                    statXpSub.innerHTML = `До ${currLvl + 1} ур: <b style="color:#66c0f4;">${userXpInfo.xpToNextLevel} XP</b><br>У вас всего: <b>${userXpInfo.exactCurrentXp.toLocaleString()} XP</b>`;
+                } else {
+                    statXpSub.innerHTML = `Базовый опыт для ${currLvl} ур: <b>${diff.currentXp.toLocaleString()} XP</b>`;
+                }
+            } else {
+                statXp.innerText = '0 XP';
+                statXpSub.innerText = 'Уровень уже достигнут!';
+            }
+
             statBadges.innerText = `${diff.badgesNeeded} шт.`;
+            if (diff.badgesNeeded > 0 && diff.surplusXp > 0) {
+                statBadgesSub.innerHTML = `Даст +${(diff.badgesNeeded * 100).toLocaleString()} XP (запас: <b style="color:#a4d007;">+${diff.surplusXp} XP</b>)`;
+            } else if (diff.badgesNeeded > 0) {
+                statBadgesSub.innerHTML = `Ровно +${(diff.badgesNeeded * 100).toLocaleString()} XP`;
+            } else {
+                statBadgesSub.innerText = '';
+            }
 
             // Если база сетов уже загружена, считаем точную стоимость по ТОП-N дешевых сетов
             if (allLoadedSets && allLoadedSets.length > 0) {
@@ -1633,11 +1783,13 @@
                     estimatedCost += (diff.badgesNeeded - countToTake) * avgPrice;
                 }
                 statCost.innerText = formatMoney(Math.round(estimatedCost * 100), currencyInfo);
+                statCostSub.innerText = diff.badgesNeeded > 0 ? `~${formatMoney(Math.round(estimatedCost / diff.badgesNeeded * 100), currencyInfo)} / сет` : '';
             } else {
                 // Примерная оценка до загрузки базы (~0.25$ за сет)
                 const approxRate = currencyInfo.currency === 37 ? 452 : (currencyInfo.currency === 5 ? 81 : 1);
                 const approxCost = diff.badgesNeeded * 0.25 * approxRate;
                 statCost.innerText = `~${formatMoney(Math.round(approxCost * 100), currencyInfo)}`;
+                statCostSub.innerText = '';
             }
         }
 
