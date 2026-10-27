@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.2.1
+// @version      1.2.2
 // @description  Умный калькулятор значков, каталог самых дешёвых сетов, проверка реальных цен ТП со стаканом (Instant-Fill) и мгновенный крафт без анимаций.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
@@ -1352,26 +1352,98 @@
         const userBadgeLevels = new Map();
         const readyBadges = [];
 
-        badgeRows.forEach(row => {
-            const link = row.querySelector('a.badge_row_overlay');
-            if (!link) return;
-            const match = link.href.match(/\/gamecards\/(\d+)/);
-            if (!match) return;
-            const appid = match[1];
+        function parseBadgesFromDoc(doc) {
+            const rows = doc.querySelectorAll('.badge_row');
+            rows.forEach(row => {
+                const link = row.querySelector('a.badge_row_overlay') 
+                    || row.querySelector('a[href*="/gamecards/"]')
+                    || row.querySelector('.badge_title a')
+                    || row.querySelector('.badge_icon a');
+                if (!link || !link.href) return;
 
-            let lvl = 0;
-            const desc = row.querySelector('.badge_info_description');
-            if (desc) {
-                const m = desc.innerText.match(/(?:Уровень|Level)\s*(\d+)/i);
-                if (m) lvl = parseInt(m[1], 10);
-            }
-            userBadgeLevels.set(appid, lvl);
+                const match = link.href.match(/\/gamecards\/(\d+)/);
+                if (!match) return;
+                const appid = match[1];
 
-            const craftBtn = row.querySelector('.badge_craft_button, a[href*="ajaxcraftbadge"]');
-            if (craftBtn) {
-                readyBadges.push({ appid, row });
+                const isFoil = link.href.includes('border=1');
+                if (isFoil) return; // Металлические значки не заменяют обычные 1-5 ур.
+
+                let lvl = 0;
+
+                // 1. Проверяем CSS-класс завершённости Steam (.is_completed или .completed)
+                if (row.classList.contains('is_completed') || row.classList.contains('completed')) {
+                    lvl = 5;
+                }
+
+                // 2. Проверяем весь текст плашки значка
+                const fullText = (row.innerText || '').replace(/\s+/g, ' ');
+
+                // Опыт: 500 ед. опыта = 5 уровень, 400 = 4 и т.д.
+                const xpMatch = fullText.match(/(\d+)\s*(?:ед\.\s*опыта|XP)/i);
+                if (xpMatch) {
+                    const xp = parseInt(xpMatch[1], 10);
+                    if (xp >= 500) lvl = Math.max(lvl, 5);
+                    else if (xp >= 100) lvl = Math.max(lvl, Math.floor(xp / 100));
+                }
+
+                // Указание уровня: "Уровень 5", "Level 5", "ур. 5", "5 ур.", "5 уровня", "5-го уровня", "Lvl 5"
+                const lvlMatch1 = fullText.match(/(?:Уровень|Level|ур\.?|lvl)\s*(\d+)/i);
+                if (lvlMatch1) {
+                    lvl = Math.max(lvl, parseInt(lvlMatch1[1], 10));
+                }
+
+                const lvlMatch2 = fullText.match(/(\d+)\s*(?:ур|уровн|lvl|level)/i);
+                if (lvlMatch2) {
+                    lvl = Math.max(lvl, parseInt(lvlMatch2[1], 10));
+                }
+
+                lvl = Math.min(Math.max(lvl, 0), 5);
+
+                const prevLvl = userBadgeLevels.get(appid) || 0;
+                userBadgeLevels.set(appid, Math.max(prevLvl, lvl));
+
+                const craftBtn = row.querySelector('.badge_craft_button, a[href*="ajaxcraftbadge"]');
+                if (craftBtn) {
+                    readyBadges.push({ appid, row });
+                }
+            });
+        }
+
+        // Парсим текущую открытую страницу
+        parseBadgesFromDoc(document);
+
+        // Функция фоновой дозагрузки остальных страниц значков пользователя (?p=2, ?p=3...)
+        async function fetchOtherBadgesPages() {
+            const pageLinks = Array.from(document.querySelectorAll('a.pagelink, a[href*="/badges/"][href*="p="], a[href*="/badges?p="]'));
+            const urls = new Set();
+            pageLinks.forEach(a => {
+                if (a.href && (a.href.includes('p=') || a.href.includes('page='))) {
+                    urls.add(a.href);
+                }
+            });
+
+            if (urls.size === 0) return;
+
+            let updated = false;
+            for (const url of urls) {
+                try {
+                    const resp = await fetch(url);
+                    const html = await resp.text();
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    parseBadgesFromDoc(doc);
+                    updated = true;
+                } catch (e) {
+                    console.warn('[SLM] Не удалось загрузить страницу значков ' + url, e);
+                }
             }
-        });
+
+            if (updated) {
+                console.log(`[SLM] Все страницы значков загружены! Всего распознано значков игр: ${userBadgeLevels.size}`);
+                applyCatalogFilters();
+                renderCatalogTable();
+                updateLevelCalculator();
+            }
+        }
 
         // 3. Ищем контейнер для шапки
         const header = document.querySelector('.badges_sheet') 
@@ -1666,6 +1738,10 @@
                     statusBadge = `<span class="slm-badge-pill slm-badge-pill-progress">${userLvl}/5</span>`;
                 }
 
+                const buyBtnHtml = userLvl >= 5
+                    ? `<button class="slm-btn slm-btn-secondary" disabled style="padding:4px 8px; font-size:11px; opacity:0.6; cursor:default;" title="Значок уже максимального уровня (5/5)">✓ Макс. ур.</button>`
+                    : `<button class="slm-btn slm-btn-green slm-buy-direct-btn" data-appid="${item.appid}" style="padding:4px 8px; font-size:11px;">🛒 Купить</button>`;
+
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     <td>
@@ -1683,9 +1759,7 @@
                             <a href="https://steamcommunity.com/my/gamecards/${item.appid}/" target="_blank" class="slm-btn slm-btn-secondary" style="padding:4px 8px; font-size:11px;">
                                 🔗 Открыть
                             </a>
-                            <button class="slm-btn slm-btn-green slm-buy-direct-btn" data-appid="${item.appid}" style="padding:4px 8px; font-size:11px;">
-                                🛒 Купить
-                            </button>
+                            ${buyBtnHtml}
                         </div>
                     </td>
                 `;
@@ -1722,13 +1796,14 @@
         bar.querySelector('#slm-catalog-only-5').addEventListener('change', applyCatalogFilters);
         bar.querySelector('#slm-catalog-refresh-btn').addEventListener('click', () => loadCatalogData(true));
 
-        // Фоновая предварительная подгрузка цен
+        // Фоновая предварительная подгрузка цен и остальных страниц значков
         setTimeout(() => {
             fetchCheapSets(currencyInfo).then(sets => {
                 allLoadedSets = sets;
                 updateLevelCalculator();
             }).catch(() => {});
-        }, 800);
+            fetchOtherBadgesPages().catch(() => {});
+        }, 500);
 
         // --- ЛОГИКА ТУРБО-КРАФТА ---
         const massBtn = bar.querySelector('#slm-mass-craft-btn');
