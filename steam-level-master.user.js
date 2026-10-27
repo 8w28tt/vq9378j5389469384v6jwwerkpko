@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.3.1
+// @version      1.3.2
 // @description  Каталог самых дешёвых сетов карточек, проверка реальных цен ТП со стаканом (Instant-Fill) и мгновенный крафт без анимаций.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
@@ -1475,28 +1475,56 @@
         const userBadgeLevels = new Map();
         const readyBadges = [];
 
-        function isBadgeRowReadyToCraft(row) {
+        function isBadgeRowReadyToCraft(row, currentLvl = 0) {
             if (!row) return false;
-            if (row.querySelector('.btn_green_white_innerfade, .badge_craft_button, a[href*="ajaxcraftbadge"]')) {
-                return true;
+
+            // 1. Если значок уже максимального 5 уровня - его нельзя скрафтить
+            if (currentLvl >= 5 || row.classList.contains('is_completed') || row.classList.contains('completed')) {
+                return false;
             }
-            const links = row.querySelectorAll('a.btn_small_thin, a[href*="/gamecards/"]');
-            for (const link of links) {
-                const text = (link.innerText || '').trim().toLowerCase();
-                if (text.includes('готов') || text.includes('ready') || text.includes('сковать') || text.includes('craft')) {
+
+            const fullText = (row.innerText || '').toLowerCase();
+
+            // 2. Строгие исключения: если в строке прямо написано "не готов" или "not ready"
+            if (fullText.includes('не готов') || fullText.includes('not ready')) {
+                return false;
+            }
+
+            // 3. Проверка прогресса собранных карт (например: "5 из 5", "0 из 5", "3 из 5", "5 of 5")
+            const progressEl = row.querySelector('.progress_info_bold, .badge_progress_info, .badge_info_description');
+            const pText = progressEl ? progressEl.innerText : fullText;
+            const progressMatch = pText.match(/(\d+)\s*(?:из|\/|of)\s*(\d+)/i);
+            if (progressMatch) {
+                const owned = parseInt(progressMatch[1], 10);
+                const total = parseInt(progressMatch[2], 10);
+                // Отсекаем XP (в сетах Steam обычно от 5 до 25 карт)
+                if (total > 0 && total <= 30) {
+                    if (owned < total || owned === 0) {
+                        return false; // Карты отсутствуют или не все
+                    }
+                    if (owned >= total && owned > 0) {
+                        return true; // Все карты в наличии
+                    }
+                }
+            }
+
+            // 4. Проверка нативной кнопки готовности Steam.
+            // Кнопка готовности Steam:
+            // - Обязательно ведет на страницу карт (/gamecards/)
+            // - Имеет точный текст "Готов" / "Ready" (а не "Купить на Торговой площадке", "Просмотреть", "Как получить")
+            const gamecardLinks = row.querySelectorAll('a[href*="/gamecards/"]');
+            for (const link of gamecardLinks) {
+                const btnText = (link.innerText || '').trim().toLowerCase();
+                // Исключаем лишние служебные кнопки
+                if (btnText.includes('не готов') || btnText.includes('купить') || btnText.includes('как получить') || btnText.includes('просмотр')) {
+                    continue;
+                }
+                // Строго проверяем, что это кнопка готовности к ковке
+                if (/^(?:готов|ready|сковать(?:\s*значок)?|craft(?:\s*badge)?)$/i.test(btnText)) {
                     return true;
                 }
             }
-            const progressEl = row.querySelector('.progress_info_bold, .badge_progress_info');
-            if (progressEl) {
-                const match = progressEl.innerText.match(/(\d+)\s*(?:из|\/|of)\s*(\d+)/i);
-                if (match && parseInt(match[1], 10) >= parseInt(match[2], 10) && parseInt(match[2], 10) > 0) {
-                    return true;
-                }
-            }
-            if (row.classList.contains('ready') || (row.innerText || '').match(/(?:готов к ковке|ready to craft)/i)) {
-                return true;
-            }
+
             return false;
         }
 
@@ -1550,7 +1578,7 @@
                 const prevLvl = userBadgeLevels.get(appid) || 0;
                 userBadgeLevels.set(appid, Math.max(prevLvl, lvl));
 
-                if (isBadgeRowReadyToCraft(row)) {
+                if (lvl < 5 && isBadgeRowReadyToCraft(row, lvl)) {
                     if (!readyBadges.some(b => b.appid === appid)) {
                         readyBadges.push({ appid, row });
                     }
@@ -1571,14 +1599,16 @@
                                 craftBtn.innerText = '⚡ Быстрый крафт';
                             }
                         };
-                        const actionContainer = row.querySelector('.badge_row_overlay') 
-                            || row.querySelector('.btn_green_white_innerfade') 
-                            || row.querySelector('a[href*="/gamecards/"]')
-                            || row.querySelector('.badge_row_inner')
-                            || row;
-                        if (actionContainer && actionContainer.parentNode) {
-                            actionContainer.parentNode.insertBefore(craftBtn, actionContainer.nextSibling);
+                        const readyLink = Array.from(row.querySelectorAll('a[href*="/gamecards/"]')).find(a => {
+                            const t = (a.innerText || '').trim().toLowerCase();
+                            return /^(?:готов|ready|сковать)/i.test(t);
+                        }) || row.querySelector('.btn_green_white_innerfade[href*="/gamecards/"]')
+                           || row.querySelector('a[href*="/gamecards/"]');
+
+                        if (readyLink && readyLink.parentNode) {
+                            readyLink.parentNode.insertBefore(craftBtn, readyLink.nextSibling);
                         } else {
+                            const actionContainer = row.querySelector('.badge_row_inner') || row;
                             actionContainer.appendChild(craftBtn);
                         }
                     }
