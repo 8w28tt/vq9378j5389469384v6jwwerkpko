@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.3.3
+// @version      1.3.4
 // @description  Каталог самых дешёвых сетов карточек, проверка реальных цен ТП со стаканом (Instant-Fill) и мгновенный крафт без анимаций.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
@@ -670,6 +670,71 @@
         runWhenReady(initBadgesPage);
     }
 
+    // Определение текущего уровня значка конкретной игры на странице /gamecards/{appid}/
+    function detectGameCardCurrentLevel() {
+        let lvl = 0;
+
+        // Собираем текст только из блоков описания значка игры (не затрагивая шапку аккаунта)
+        const badgeContainers = [
+            document.querySelector('.badge_current'),
+            document.querySelector('.badge_info_description'),
+            document.querySelector('.badge_info'),
+            document.querySelector('.badge_info_title'),
+            document.querySelector('.badge_detail_header'),
+            document.querySelector('.badge_cards_to_collect')
+        ].filter(Boolean);
+
+        let textToScan = '';
+        for (const c of badgeContainers) {
+            textToScan += ' ' + (c.innerText || '');
+        }
+
+        // Если специфичные блоки не найдены, берем верхнюю часть страницы значка
+        if (!textToScan.trim()) {
+            const fallbackHeader = document.querySelector('.badge_header') 
+                || document.querySelector('.profile_badges_header')
+                || document.querySelector('#mainContents');
+            textToScan = fallbackHeader ? fallbackHeader.innerText : '';
+        }
+
+        // 1. Проверяем CSS-класс завершённости (уровень 5)
+        if (document.querySelector('.badge_current.is_completed, .badge_current.completed, .badge_info.is_completed, .badge_card_set_card_area.is_completed')) {
+            lvl = Math.max(lvl, 5);
+        }
+
+        // 2. Поиск по опыту (XP): "400 ед. опыта", "400 XP", "500 ед. опыта", "100 XP"
+        const xpMatch = textToScan.match(/(\d+)\s*(?:ед\.\s*опыта|XP)/i);
+        if (xpMatch) {
+            const xp = parseInt(xpMatch[1], 10);
+            if (xp >= 500) {
+                lvl = Math.max(lvl, 5);
+            } else if (xp >= 100 && xp <= 500) {
+                lvl = Math.max(lvl, Math.floor(xp / 100));
+            }
+        }
+
+        // 3. Поиск по порядковым числительным в русском языке:
+        // "4-й уровень", "4-го уровня", "4-ый уровень", "4-ий уровень", "4-м уровнем", "4 ур."
+        const ordinalMatch = textToScan.match(/(\d+)\s*-(?:й|го|ий|ый|ем|ом)\s*(?:уровень|уровня|ур\.?|level|lvl)/i);
+        if (ordinalMatch) {
+            lvl = Math.max(lvl, parseInt(ordinalMatch[1], 10));
+        }
+
+        // 4. Поиск "4 уровень", "4 уровня", "4 ур.", "4 level", "4 lvl"
+        const numFirstMatch = textToScan.match(/(\d+)\s*(?:уровень|уровня|ур\.?|level|lvl)\b/i);
+        if (numFirstMatch) {
+            lvl = Math.max(lvl, parseInt(numFirstMatch[1], 10));
+        }
+
+        // 5. Поиск "Уровень 4", "Level 4", "Lvl 4", "ур. 4"
+        const wordFirstMatch = textToScan.match(/(?:уровень|level|lvl|ур\.?)\s*(\d+)/i);
+        if (wordFirstMatch) {
+            lvl = Math.max(lvl, parseInt(wordFirstMatch[1], 10));
+        }
+
+        return Math.min(Math.max(lvl, 0), 5);
+    }
+
     function initGameCardsPage() {
         if (document.getElementById('slm-panel-gamecards')) return true; // Уже встроено
 
@@ -682,12 +747,7 @@
         if (!cardElements || cardElements.length === 0) return false; // Ждем рендера карт
 
         // Определяем текущий уровень значка
-        let currentLevel = 0;
-        const levelHeader = document.querySelector('.badge_info_description');
-        if (levelHeader) {
-            const lvlMatch = levelHeader.innerText.match(/(?:Уровень|Level)\s*(\d+)/i);
-            if (lvlMatch) currentLevel = parseInt(lvlMatch[1], 10);
-        }
+        const currentLevel = detectGameCardCurrentLevel();
 
         const cardsData = [];
         cardElements.forEach(cardEl => {
