@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.3.4
-// @description  Каталог самых дешёвых сетов карточек, проверка реальных цен ТП со стаканом (Instant-Fill) и мгновенный крафт без анимаций.
+// @version      1.4.0
+// @description  Каталог самых дешёвых сетов карточек, закупка через Multi-Buy без подтверждений на телефоне и мгновенный крафт.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
 // @updateURL    https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
@@ -14,8 +14,10 @@
 // @match        *://steamcommunity.com/id/*/gamecards*
 // @match        *://steamcommunity.com/profiles/*/gamecards*
 // @match        *://steamcommunity.com/my/gamecards*
+// @match        *://steamcommunity.com/market/multibuy*
 // @include      *://steamcommunity.com/*/badges*
 // @include      *://steamcommunity.com/*/gamecards*
+// @include      *://steamcommunity.com/market/multibuy*
 // @icon         https://store.steampowered.com/favicon.ico
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
@@ -618,6 +620,66 @@
         return processSets(fallbacks.map(f => ({ appid: f.appid, game: f.game, normal: { count: f.count, price: f.priceUsd.toString(), quantity: 100 } })), {}, currencyInfo);
     }
 
+    // =========================================================================
+    // ОФИЦИАЛЬНЫЙ STEAM MULTI-BUY (БЕЗ ПОДТВЕРЖДЕНИЙ НА ТЕЛЕФОНЕ)
+    // =========================================================================
+    function openMultiBuyPage(appid, cardsToBuy, targetLevel = 1) {
+        if (!cardsToBuy || cardsToBuy.length === 0) return;
+
+        // Сохраняем план покупки в sessionStorage для автоматизации на странице Multi-Buy
+        const plan = {
+            gameAppId: appid,
+            targetLevel: targetLevel,
+            returnUrl: window.location.href,
+            timestamp: Date.now(),
+            items: cardsToBuy.map(c => ({
+                marketHashName: c.marketHashName,
+                name: c.name,
+                qty: c.needed || 1
+            }))
+        };
+        try {
+            sessionStorage.setItem('slm_multibuy_plan', JSON.stringify(plan));
+        } catch (e) {}
+
+        // Формируем официальный URL Multi-Buy Steam
+        const itemParams = cardsToBuy.map(c => `items[]=${encodeURIComponent(c.marketHashName)}`).join('&');
+        const url = `https://steamcommunity.com/market/multibuy?appid=753&${itemParams}`;
+
+        showToast('🚀 Открываем официальный Multi-Buy Steam (без подтверждений на телефоне)...', 'info');
+        const win = window.open(url, '_blank');
+        if (!win) {
+            window.location.href = url;
+        }
+    }
+
+    async function resolveAndOpenMultiBuy(appid, cardsToBuy, targetLevel = 1) {
+        if (!cardsToBuy || cardsToBuy.length === 0) return;
+
+        // Если у какой-то карты нет ссылки на маркет (например, карта уже есть в инвентаре для уровня > 1)
+        // или если hashName составлен вслепую (русское имя), уточняем через официальный список маркета
+        const needsResolve = cardsToBuy.some(c => !c.marketHashName || c.marketHashName === `${appid}-${c.name}`);
+        if (needsResolve) {
+            try {
+                showToast('⏳ Уточняем точные названия карточек на ТП...', 'info');
+                const currencyInfo = getCurrencyInfo();
+                const marketItems = await fetchGameMarketItems(appid, currencyInfo.currency);
+                if (marketItems && marketItems.length > 0) {
+                    cardsToBuy.forEach((card, idx) => {
+                        const matched = matchCardWithMarket(card, marketItems, idx, cardsToBuy.length);
+                        if (matched && matched.hash_name) {
+                            card.marketHashName = matched.hash_name;
+                        }
+                    });
+                }
+            } catch (e) {
+                console.warn('[SLM] Ошибка авто-уточнения карточек', e);
+            }
+        }
+
+        openMultiBuyPage(appid, cardsToBuy, targetLevel);
+    }
+
     async function openDirectBadgePurchaseModal(appid, targetLevel = 1) {
         const currencyInfo = getCurrencyInfo();
         showToast(`⏳ Загружаем карточки игры #${appid} с маркета...`, 'info');
@@ -634,7 +696,7 @@
             marketHashName: item.hash_name
         }));
 
-        openPriceReviewModal(appid, cardsToBuy, targetLevel);
+        openMultiBuyPage(appid, cardsToBuy, targetLevel);
     }
 
     // =========================================================================
@@ -664,10 +726,148 @@
 
     // Запуск скрипта
     const currentPath = window.location.pathname;
-    if (currentPath.includes('/gamecards')) {
+    if (currentPath.includes('/market/multibuy')) {
+        runWhenReady(initMultiBuyPage);
+    } else if (currentPath.includes('/gamecards')) {
         runWhenReady(initGameCardsPage);
     } else if (currentPath.includes('/badges')) {
         runWhenReady(initBadgesPage);
+    }
+
+    // =========================================================================
+    // СТРАНИЦА ОФИЦИАЛЬНОГО MULTI-BUY STEAM: /market/multibuy
+    // =========================================================================
+    function initMultiBuyPage() {
+        if (document.getElementById('slm-panel-multibuy')) return true;
+
+        const mainContainer = document.querySelector('#market_multibuy, #tabContentsMarket, .market_multibuy_table, #mainContents, .pagecontent') || document.body;
+        if (!mainContainer) return false;
+
+        // Считываем сохраненный план покупки (если переход был из нашего скрипта)
+        let plan = null;
+        try {
+            const raw = sessionStorage.getItem('slm_multibuy_plan');
+            if (raw) {
+                plan = JSON.parse(raw);
+                if (Date.now() - (plan.timestamp || 0) > 30 * 60 * 1000) {
+                    plan = null;
+                }
+            }
+        } catch (e) {}
+
+        const panel = document.createElement('div');
+        panel.id = 'slm-panel-multibuy';
+        panel.className = 'slm-panel';
+        panel.style.margin = '15px 0 20px 0';
+        panel.innerHTML = `
+            <div class="slm-title">
+                <span>🚀 Steam Level Master — Официальный Multi-Buy</span>
+                <span style="font-size: 13px; color: #a4d007;">🛡️ Мобильные подтверждения НЕ требуются</span>
+            </div>
+            <div style="font-size: 13px; margin: 10px 0; color: #c6d4df; line-height: 1.5;">
+                Вы находитесь на официальной странице пакетного заказа Steam. Все выбранные карточки будут закуплены одновременно 
+                <b>без необходимости подтверждать каждую позицию в приложении на телефоне</b>.
+            </div>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px;">
+                <button class="slm-btn slm-btn-green" id="slm-mb-btn-order" style="font-weight: bold; padding: 8px 18px; font-size: 14px;">
+                    ⚡ Разместить весь заказ (1 клик)
+                </button>
+                <button class="slm-btn slm-btn-secondary" id="slm-mb-btn-checkbox">
+                    ☑️ Принять Соглашение подписчика Steam
+                </button>
+                ${plan && plan.returnUrl ? `
+                    <a href="${plan.returnUrl}" class="slm-btn slm-btn-secondary" style="text-decoration: none; padding: 6px 14px;">
+                        🔙 Вернуться к значку
+                    </a>
+                ` : ''}
+            </div>
+            <div id="slm-mb-message" style="margin-top: 10px; font-size: 13px; color: #66c0f4; display: none;"></div>
+        `;
+
+        const targetParent = document.querySelector('#mainContents') || document.querySelector('.pagecontent') || document.body;
+        if (targetParent === document.body) {
+            document.body.prepend(panel);
+        } else {
+            targetParent.parentNode.insertBefore(panel, targetParent);
+        }
+
+        function checkAgreement() {
+            const ssaCheckbox = document.querySelector('#market_multibuy_ssa, #ssa, input[name="ssa"], input[type="checkbox"][id*="ssa"]');
+            if (ssaCheckbox) {
+                ssaCheckbox.checked = true;
+                ssaCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+            }
+            return false;
+        }
+
+        setTimeout(checkAgreement, 300);
+        setTimeout(checkAgreement, 1200);
+
+        if (plan && Array.isArray(plan.items) && plan.items.some(i => i.qty > 1)) {
+            setTimeout(() => applyPlanQuantities(plan), 500);
+            setTimeout(() => applyPlanQuantities(plan), 1500);
+        }
+
+        function applyPlanQuantities(p) {
+            const qtyMap = new Map();
+            p.items.forEach(i => qtyMap.set(i.marketHashName, i.qty));
+
+            const inputs = document.querySelectorAll('input.market_multi_quantity, input[name*="quantity"], input[type="number"], .market_multibuy_row input[type="text"]');
+            let updatedCount = 0;
+            inputs.forEach(input => {
+                const row = input.closest('tr, .market_multi_row, .market_multibuy_row, div[data-hash_name]');
+                if (row) {
+                    for (const [hashName, qty] of qtyMap.entries()) {
+                        const isMatch = (row.dataset && row.dataset.hash_name === hashName) ||
+                                        (row.querySelector(`a[href*="${encodeURIComponent(hashName)}"]`)) ||
+                                        (row.innerHTML.includes(hashName)) ||
+                                        (row.innerText && hashName.includes(row.innerText.trim()));
+                        if (isMatch) {
+                            if (qty > 1) {
+                                input.value = qty;
+                                input.dispatchEvent(new Event('change', { bubbles: true }));
+                                input.dispatchEvent(new Event('input', { bubbles: true }));
+                                updatedCount++;
+                            }
+                            break;
+                        }
+                    }
+                }
+            });
+            if (updatedCount > 0) {
+                const msg = panel.querySelector('#slm-mb-message');
+                if (msg) {
+                    msg.style.display = 'block';
+                    msg.innerText = `Установлено количество для ${updatedCount} карт согласно плану значка.`;
+                }
+            }
+        }
+
+        panel.querySelector('#slm-mb-btn-checkbox').addEventListener('click', () => {
+            if (checkAgreement()) {
+                showToast('Соглашение подписчика Steam принято!', 'success');
+            } else {
+                showToast('Чекбокс соглашения не найден (возможно, страница ещё загружается)', 'info');
+            }
+        });
+
+        panel.querySelector('#slm-mb-btn-order').addEventListener('click', () => {
+            checkAgreement();
+            const submitBtn = document.querySelector('#market_multibuy_submit, .market_multibuy_submit, a.btn_green_white_innerfade[onclick*="Submit"], a[onclick*="CreateBuyOrder"], button[type="submit"]');
+            if (submitBtn) {
+                submitBtn.click();
+                const msg = panel.querySelector('#slm-mb-message');
+                if (msg) {
+                    msg.style.display = 'block';
+                    msg.innerHTML = '<b style="color:#a4d007;">Заказ размещен!</b> После завершения покупок вернитесь к значку для быстрой ковки.';
+                }
+            } else {
+                showToast('Нажмите зелёную кнопку «Разместить заказ» внизу таблицы Steam', 'info');
+            }
+        });
+
+        return true;
     }
 
     // Определение текущего уровня значка конкретной игры на странице /gamecards/{appid}/
@@ -828,8 +1028,11 @@
             </div>
 
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                <button class="slm-btn slm-btn-green" id="slm-btn-check-prices">
-                    🔍 Проверить реальные цены ТП со стаканом
+                <button class="slm-btn slm-btn-green" id="slm-btn-buy-multibuy" style="font-weight: bold; background: linear-gradient(90deg, #a4d007 0%, #799905 100%); color: #fff;">
+                    🛒 Купить через Multi-Buy (без подтверждений на телефоне)
+                </button>
+                <button class="slm-btn slm-btn-secondary" id="slm-btn-check-prices">
+                    🔍 Проверить цены со стаканом (ручной режим)
                 </button>
                 <button class="slm-btn slm-btn-secondary" id="slm-btn-turbo-craft" ${canCraftAny(currentLevel, cardsData) ? '' : 'disabled'}>
                     ⚡ Быстрый крафт готовых (Turbo Craft)
@@ -861,9 +1064,11 @@
 
             const summaryEl = panel.querySelector('#slm-calc-summary');
             const checkBtn = panel.querySelector('#slm-btn-check-prices');
+            const buyMbBtn = panel.querySelector('#slm-btn-buy-multibuy');
             if (summaryEl) {
                 if (levelsToCraft === 0) {
                     summaryEl.innerHTML = `<span style="color: #a4d007;">🎉 Значок уже прокачан до уровня ${currentLevel}!</span>`;
+                    if (buyMbBtn) buyMbBtn.disabled = true;
                     if (checkBtn) checkBtn.disabled = true;
                 } else {
                     summaryEl.innerHTML = `
@@ -871,6 +1076,7 @@
                         Всего необходимо докупить карт: <b style="color: #66c0f4; font-size: 16px;">${totalCardsToBuy} шт.</b>
                         ${breakdownHtml}
                     `;
+                    if (buyMbBtn) buyMbBtn.disabled = (totalCardsToBuy === 0);
                     if (checkBtn) checkBtn.disabled = (totalCardsToBuy === 0);
                 }
             }
@@ -904,6 +1110,27 @@
                 } finally {
                     turboBtn.disabled = false;
                     turboBtn.innerText = '⚡ Быстрый крафт готовых (Turbo Craft)';
+                }
+            });
+        }
+
+        // Обработчик покупки через Multi-Buy
+        const buyMbBtn = panel.querySelector('#slm-btn-buy-multibuy');
+        if (buyMbBtn) {
+            buyMbBtn.addEventListener('click', async () => {
+                const cardsToBuy = cardsData.filter(c => (c.needed || 0) > 0);
+                if (cardsToBuy.length === 0) {
+                    showToast('Все необходимые карты уже в наличии!', 'success');
+                    return;
+                }
+                buyMbBtn.disabled = true;
+                const oldText = buyMbBtn.innerText;
+                buyMbBtn.innerText = '⏳ Открываем Multi-Buy...';
+                try {
+                    await resolveAndOpenMultiBuy(appid, cardsToBuy, targetLevel);
+                } finally {
+                    buyMbBtn.disabled = false;
+                    buyMbBtn.innerText = oldText;
                 }
             });
         }
@@ -996,10 +1223,13 @@
                         <span style="font-size: 13px; color: #8f98a0;">Оценочная стоимость:</span>
                         <div id="slm-total-price" style="font-size: 19px; font-weight: bold; color: #a4d007;">Считаем...</div>
                     </div>
-                    <div style="display:flex; gap:10px;">
+                    <div style="display:flex; gap:10px; align-items:center;">
                         <button class="slm-btn slm-btn-secondary" id="slm-btn-cancel">Отмена</button>
-                        <button class="slm-btn slm-btn-green" id="slm-btn-execute-orders" disabled>
-                            🛒 Подтвердить и выставить ордеры
+                        <button class="slm-btn slm-btn-green" id="slm-btn-modal-multibuy" style="font-weight:bold; background: linear-gradient(90deg, #a4d007 0%, #799905 100%);">
+                            🚀 Multi-Buy (0 подтверждений)
+                        </button>
+                        <button class="slm-btn slm-btn-secondary" id="slm-btn-execute-orders" disabled title="Прямое выставление ордеров через API (может потребовать подтверждение в Steam Mobile)">
+                            🛒 Выставить ордеры API
                         </button>
                     </div>
                 </div>
@@ -1011,6 +1241,29 @@
         const closeModal = () => modalBackdrop.remove();
         modalBackdrop.querySelector('#slm-modal-close').onclick = closeModal;
         modalBackdrop.querySelector('#slm-btn-cancel').onclick = closeModal;
+
+        const modalMbBtn = modalBackdrop.querySelector('#slm-btn-modal-multibuy');
+        if (modalMbBtn) {
+            modalMbBtn.onclick = () => {
+                const selectedItems = (typeof marketResults !== 'undefined' && Array.isArray(marketResults))
+                    ? marketResults.filter(r => r.selected)
+                    : [];
+                const cardsForMb = (selectedItems.length > 0
+                    ? selectedItems.map(r => ({
+                        marketHashName: r.card.marketHashName,
+                        name: r.card.name,
+                        needed: r.card.needed
+                      }))
+                    : cardsToBuy.filter(c => (c.needed || 0) > 0));
+
+                if (cardsForMb.length === 0) {
+                    showToast('Не выбрано ни одной карты для покупки!', 'error');
+                    return;
+                }
+                closeModal();
+                openMultiBuyPage(appid, cardsForMb, targetLevel);
+            };
+        }
 
         // ШАГ 1: Запрашиваем все карточки игры через официальный поиск ТП
         const marketItemsList = await fetchGameMarketItems(appid, currency);
@@ -1920,7 +2173,7 @@
 
                 const buyBtnHtml = userLvl >= 5
                     ? `<button class="slm-btn slm-btn-secondary" disabled style="padding:4px 8px; font-size:11px; opacity:0.6; cursor:default;" title="Значок уже максимального уровня (5/5)">✓ Макс. ур.</button>`
-                    : `<button class="slm-btn slm-btn-green slm-buy-direct-btn" data-appid="${item.appid}" style="padding:4px 8px; font-size:11px;">🛒 Купить</button>`;
+                    : `<button class="slm-btn slm-btn-green slm-buy-direct-btn" data-appid="${item.appid}" style="padding:4px 8px; font-size:11px;" title="Купить через официальный Multi-Buy без подтверждений на телефоне">🛒 Multi-Buy</button>`;
 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
