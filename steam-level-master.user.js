@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Level & Badge Master
 // @namespace    https://github.com/8w28tt/vq9378j5389469384v6jwwerkpko
-// @version      1.4.0
+// @version      1.4.1
 // @description  Каталог самых дешёвых сетов карточек, закупка через Multi-Buy без подтверждений на телефоне и мгновенный крафт.
 // @author       oviot
 // @downloadURL  https://raw.githubusercontent.com/8w28tt/vq9378j5389469384v6jwwerkpko/main/steam-level-master.user.js
@@ -874,14 +874,13 @@
     function detectGameCardCurrentLevel() {
         let lvl = 0;
 
-        // Собираем текст только из блоков описания значка игры (не затрагивая шапку аккаунта)
+        // Собираем текст только из блоков описания значка игры (не затрагивая шапку аккаунта и задания)
         const badgeContainers = [
             document.querySelector('.badge_current'),
             document.querySelector('.badge_info_description'),
             document.querySelector('.badge_info'),
             document.querySelector('.badge_info_title'),
-            document.querySelector('.badge_detail_header'),
-            document.querySelector('.badge_cards_to_collect')
+            document.querySelector('.badge_detail_header')
         ].filter(Boolean);
 
         let textToScan = '';
@@ -897,30 +896,45 @@
             textToScan = fallbackHeader ? fallbackHeader.innerText : '';
         }
 
-        // 1. Проверяем CSS-класс завершённости (уровень 5)
+        const lowerScan = textToScan.toLowerCase();
+
+        // 1. Проверяем явные признаки того, что значок еще НЕ скован (уровень 0)
+        // В Steam для значков 0 уровня пишется: "Вы ещё не сковали этот значок" / "You haven't unlocked this badge yet"
+        const unownedSelectors = '.badge_current.unowned, .badge_current.not_unlocked, .badge_info_unowned, .badge_not_unlocked';
+        if (document.querySelector(unownedSelectors)) {
+            return 0;
+        }
+
+        const unownedPhrases = [
+            'не сковали',
+            'не скован',
+            'не получен',
+            'haven\'t unlocked',
+            'haven\'t crafted',
+            'not yet unlocked',
+            'not unlocked',
+            'not yet crafted',
+            'no badge'
+        ];
+        for (const phrase of unownedPhrases) {
+            if (lowerScan.includes(phrase)) {
+                return 0;
+            }
+        }
+
+        // 2. Проверяем CSS-класс завершённости (уровень 5)
         if (document.querySelector('.badge_current.is_completed, .badge_current.completed, .badge_info.is_completed, .badge_card_set_card_area.is_completed')) {
             lvl = Math.max(lvl, 5);
         }
 
-        // 2. Поиск по опыту (XP): "400 ед. опыта", "400 XP", "500 ед. опыта", "100 XP"
-        const xpMatch = textToScan.match(/(\d+)\s*(?:ед\.\s*опыта|XP)/i);
-        if (xpMatch) {
-            const xp = parseInt(xpMatch[1], 10);
-            if (xp >= 500) {
-                lvl = Math.max(lvl, 5);
-            } else if (xp >= 100 && xp <= 500) {
-                lvl = Math.max(lvl, Math.floor(xp / 100));
-            }
-        }
-
         // 3. Поиск по порядковым числительным в русском языке:
-        // "4-й уровень", "4-го уровня", "4-ый уровень", "4-ий уровень", "4-м уровнем", "4 ур."
-        const ordinalMatch = textToScan.match(/(\d+)\s*-(?:й|го|ий|ый|ем|ом)\s*(?:уровень|уровня|ур\.?|level|lvl)/i);
+        // "4-й уровень", "1-й уровень", "4-го уровня", "4-ый уровень", "4-ий уровень", "4-м уровнем", "4 ур."
+        const ordinalMatch = textToScan.match(/(\d+)\s*-(?:й|го|ий|ый|ой|ем|ом)\s*(?:уровень|уровня|ур\.?|level|lvl)/i);
         if (ordinalMatch) {
             lvl = Math.max(lvl, parseInt(ordinalMatch[1], 10));
         }
 
-        // 4. Поиск "4 уровень", "4 уровня", "4 ур.", "4 level", "4 lvl"
+        // 4. Поиск "4 уровень", "1 уровень", "4 level", "1 level"
         const numFirstMatch = textToScan.match(/(\d+)\s*(?:уровень|уровня|ур\.?|level|lvl)\b/i);
         if (numFirstMatch) {
             lvl = Math.max(lvl, parseInt(numFirstMatch[1], 10));
@@ -930,6 +944,21 @@
         const wordFirstMatch = textToScan.match(/(?:уровень|level|lvl|ур\.?)\s*(\d+)/i);
         if (wordFirstMatch) {
             lvl = Math.max(lvl, parseInt(wordFirstMatch[1], 10));
+        }
+
+        // 6. Поиск по опыту (XP) ТОЛЬКО для уровней 2-5 (200, 300, 400, 500 XP):
+        // Значок 0 уровня часто пишет "100 ед. опыта" как награду за крафт, поэтому 100 XP
+        // может считаться уровнем 1 ТОЛЬКО если значок уже был получен ("получен" / "unlocked")!
+        const xpMatch = textToScan.match(/(\d+)\s*(?:ед\.\s*опыта|XP)/i);
+        if (xpMatch) {
+            const xp = parseInt(xpMatch[1], 10);
+            if (xp >= 500) {
+                lvl = Math.max(lvl, 5);
+            } else if (xp >= 200 && xp < 500) {
+                lvl = Math.max(lvl, Math.floor(xp / 100));
+            } else if (xp >= 100 && (lowerScan.includes('получен') || lowerScan.includes('unlocked'))) {
+                lvl = Math.max(lvl, 1);
+            }
         }
 
         return Math.min(Math.max(lvl, 0), 5);
@@ -1874,10 +1903,18 @@
                 if (xpMatch) {
                     const xp = parseInt(xpMatch[1], 10);
                     if (xp >= 500) lvl = Math.max(lvl, 5);
-                    else if (xp >= 100) lvl = Math.max(lvl, Math.floor(xp / 100));
+                    else if (xp >= 200) lvl = Math.max(lvl, Math.floor(xp / 100));
+                    else if (xp >= 100 && (fullText.includes('уровн') || fullText.includes('level') || fullText.includes('получен') || fullText.includes('unlocked'))) {
+                        lvl = Math.max(lvl, 1);
+                    }
                 }
 
-                // Указание уровня: "Уровень 5", "Level 5", "ур. 5", "5 ур.", "5 уровня", "5-го уровня", "Lvl 5"
+                // Указание уровня: "4-й уровень", "Уровень 5", "Level 5", "ур. 5", "5 ур.", "5 уровня", "5-го уровня", "Lvl 5"
+                const ordinalMatch = fullText.match(/(\d+)\s*-(?:й|го|ий|ый|ой|ем|ом)\s*(?:уровень|уровня|ур\.?|level|lvl)/i);
+                if (ordinalMatch) {
+                    lvl = Math.max(lvl, parseInt(ordinalMatch[1], 10));
+                }
+
                 const lvlMatch1 = fullText.match(/(?:Уровень|Level|ур\.?|lvl)\s*(\d+)/i);
                 if (lvlMatch1) {
                     lvl = Math.max(lvl, parseInt(lvlMatch1[1], 10));
